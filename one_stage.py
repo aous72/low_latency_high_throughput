@@ -33,20 +33,6 @@ from mininet.log import setLogLevel, info
 from mininet.cli import CLI
 
 ########################################################################################
-class dhcp_server( Host ):
-    "A host working as a dhcp server"
-
-    def config( self, **params ):
-        super( dhcp_server, self).config( **params )
-        s = self.params[ 'ip' ].split('.')
-        self.cmd( 'dhcpd -cf /home/mininet/dhcpd' + s[2] + '.conf '
-        	+ self.defaultIntf().name)
-
-    def terminate( self ):
-    	self.cmd('/etc/init.d/isc-dhcp-server stop')
-        super( dhcp_server, self ).terminate()
-        
-########################################################################################
 class linux_router( Host ):
     "A host working as a simple linux router"
 
@@ -92,48 +78,35 @@ class one_stage( Topo ):
         s2 = self.addSwitch( 's2', listenPort='6642')
         s3 = self.addSwitch( 's3', listenPort='6643')
         s4 = self.addSwitch( 's4', listenPort='6644')
-        s5 = self.addSwitch( 's5', listenPort='6645')        
-        s6 = self.addSwitch( 's6', listenPort='6646')
                 
         #hosts
         r1 = self.addHost( 'r1', cls=linux_router, ip=default_route_ip+'/24' )
-        self.addLink( s1, r1, bw=params[ 'high_bw' ], txo=False, rxo=False )
+        self.addLink( s1, r1, txo=False, rxo=False )
                 
         h2 = self.addHost( 'h2', ip=base_ip+'.2/24', defaultRoute = default_route )
-        self.addLink( h2, s1, bw=params[ 'high_bw' ], txo=False, rxo=False )
+        self.addLink( h2, s1, txo=False, rxo=False )
         h3 = self.addHost( 'h3', ip=base_ip+'.3/24', defaultRoute = default_route )
-        self.addLink( h3, s1, bw=params[ 'high_bw' ], txo=False, rxo=False )
-        h4 = self.addHost( 'h4', ip=base_ip+'.4/24', defaultRoute = default_route )
-        self.addLink( h4, s4, bw=params[ 'high_bw' ], txo=False, rxo=False )
+        self.addLink( h3, s1, txo=False, rxo=False )
         
-        dhcp = self.addHost( 'dhcp', cls=dhcp_server, ip=base_ip+'.5/24',
-            defaultRoute = default_route  )
-        self.addLink( dhcp, s4, bw=params[ 'high_bw' ], txo=False, rxo=False  )
-    	
     	#links between switches   
-        self.addLink( s1, s2, bw=params[ 'high_bw' ], txo=False, rxo=False )
-        self.addLink( s2, s3, bw=params[ 'low_bw'  ], delay=params[ 'in_delay'  ], 
-        	txo=False, rxo=False )
-        self.addLink( s3, s4, bw=params[ 'high_bw' ], txo=False, rxo=False )
-        self.addLink( s4, s5, bw=params[ 'high_bw' ], txo=False, rxo=False )
-        self.addLink( s5, s6, bw=params[ 'high_bw' ], delay=params[ 'ext_delay' ], 
-        	txo=False, rxo=False )
-        	
+        self.addLink( s1, s2, txo=False, rxo=False )
+        self.addLink( s2, s3, bw=params[ 'low_bw'  ], delay=1, txo=False, rxo=False )
+        self.addLink( s3, s4, delay=params[ 'ext_delay' ], txo=False, rxo=False )
+
         # out of band network
 		#switches
+        s5 = self.addSwitch( 's5', listenPort='6645')
+        s6 = self.addSwitch( 's6', listenPort='6646')
         s7 = self.addSwitch( 's7', listenPort='6647')
-        s8 = self.addSwitch( 's8', listenPort='6648')        
-        s9 = self.addSwitch( 's9', listenPort='6649')
         
         # hosts
         r2 = self.addHost( 'r2', cls=linux_router, ip=first_two_octets + '.' 
             + str(this_subnet + 10) + '.1/24' )
-        self.addLink( s7, r2, bw=params[ 'high_bw' ], txo=False, rxo=False )
+        self.addLink( s5, r2, txo=False, rxo=False )
 
 		# links between switches
-        self.addLink( s7, s8, bw=params[ 'high_bw' ], txo=False, rxo=False )
-        self.addLink( s8, s9, bw=params[ 'low_bw'  ], delay=params[ 'ext_delay'  ], 
-        	txo=False, rxo=False )
+        self.addLink( s5, s6, txo=False, rxo=False )
+        self.addLink( s6, s7, delay=params[ 'ext_delay' ], txo=False, rxo=False )
 
 ########################################################################################
 def add_root_node(net, first_two_octets, subnet):
@@ -144,7 +117,7 @@ def add_root_node(net, first_two_octets, subnet):
 
     base_ip = first_two_octets + '.' + str(subnet)    
     root_node = Host( 'root', inNamespace=False, ip=base_ip+'.100/24' )
-    link = net.addLink( root_node, net.getNodeByName('s7'), txo=False, rxo=False )
+    link = net.addLink( root_node, net.getNodeByName('s5'), txo=False, rxo=False )
     link.intf1.setIP(base_ip+'.100', 24);
     root_node.cmd('ip route flush table main'); # empty routing table
     root_node.cmd('route add -net ' + first_two_octets + '.' + str(subnet)
@@ -156,12 +129,11 @@ def add_root_node(net, first_two_octets, subnet):
                 + first_two_octets + '.' + str(subnet) + '.254'
                 + ' dev ' + link.intf1.name)
     root_node.cmd('/usr/sbin/sshd -D -o UseDNS=no -u0 &')
-    root_node.cmdPrint('route')
 
     return root_node
 
 ########################################################################################
-def run(argv):
+def create_network(argv):
     "Run one stage of network"
 
 	# if we have forgotten to raise them
@@ -174,8 +146,7 @@ def run(argv):
     this_subnet = int(base_ip[base_ip.rfind('.')+1:]) # third octet as int
     	
     # mininet
-    topo = one_stage( ip = base_ip, low_bw=5, high_bw=10, 
-    				  in_delay=10000, ext_delay=60000 )
+    topo = one_stage( ip = base_ip, low_bw=5, ext_delay=60000 )
     net = Mininet( topo, link=TCLink, 
                    controller=Controller('c0', ip='127.0.0.2', port=6653) )
     
@@ -188,10 +159,10 @@ def run(argv):
     r1.cmd('ifconfig eth0 ' + eth0_ip + ' netmask 255.255.255.0')
     
     # add eth1 to switch s6 and set its ip
-    s6 = net.getNodeByName('s6')
-    Intf('eth1', s6)
+    s4 = net.getNodeByName('s4')
+    Intf('eth1', s4)
     eth1_ip = first_two_octets + '.' + str(this_subnet) + '.253'
-    s6.cmd('ifconfig eth1 ' + eth1_ip + ' netmask 255.255.255.0')
+    s4.cmd('ifconfig eth1 ' + eth1_ip + ' netmask 255.255.255.0')
     
     # add eth2 to router 2
     r2 = net.getNodeByName('r2')
@@ -200,10 +171,10 @@ def run(argv):
     r2.cmd('ifconfig eth2 ' + eth2_ip + ' netmask 255.255.255.0')
 
     # add eth1 to switch s6 and set its ip
-    s9 = net.getNodeByName('s9')
-    Intf('eth3', s9)
+    s7 = net.getNodeByName('s7')
+    Intf('eth3', s7)
     eth3_ip = first_two_octets + '.' + str(this_subnet + 10) + '.253'    
-    s9.cmd('ifconfig eth3 ' + eth3_ip + ' netmask 255.255.255.0')
+    s7.cmd('ifconfig eth3 ' + eth3_ip + ' netmask 255.255.255.0')
     
     # add routing tables
     r1.set_routing_table(first_two_octets, this_subnet, 'eth0')
@@ -246,4 +217,4 @@ if __name__ == '__main__':
     if len(argv) != 2:
         print 'Please specify subnet'
     else:
-	    run(argv[1:])
+       create_network(argv[1:])
