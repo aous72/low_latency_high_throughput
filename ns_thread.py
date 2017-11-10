@@ -11,50 +11,189 @@ import time
 import re
 import subprocess
 import math
-import collections
+import cherrypy
+import logging
+import os
 
 ########################################################################################
 class network_state:
-    """ 
-        A class to obtain network state every 50ms
-        The code is based on _Timer's code; I did not want to inherit from Timer
-        because it is just a function that wraps around _Timer, which looks
-        like the authors of the code do not want you to inherit from 
-    """
+    " A class to obtain network state every 50ms "
 
-    INTERVAL_TIME = 0.5 # 50ms intervals
-    DEQUE_SIZE = 3 * 100 # three networks, 100 for each
-    NETEM_KEYS = ['Dev','P_Delay','SentB','BackB']
+    # constants
+    START_DELAY = 0.5 # 3s delayed start
+    TIME_INTERVAL = 0.05 # 50ms intervals
+    NS_QUEUE_SIZE = 5 # three networks, 100 for each
 
-        
-    def __init__(self):
-        self.timer = None
-        self.ns = collections.deque(maxlen=self.DEQUE_SIZE)
+    def __init__(self, mutex, dict):
+        # init network state here
+        # mutex is used to lock access to state while it is being used
+        # self.ns: this is where network state is stored
+        # args pass switch interfaces of interest in the form of a list of 
+        # dictionaries; each dictionary uses an interface name as a key.
+        # The value that corresponds to this key is a dictionary that has the 
+        # following keys:
+        #   bw: the bandwidth for this interface
+        #   delay: (optional) the interface at which delay can be obtained
+        self.mutex = mutex
+        self.timer = threading.Timer(self.START_DELAY, self.run)
+        self.timer.start()
+        self.ns = list()
+        self.idx = 0
+        self.last_time = time.time()
         self.regex = re.compile(r"qdisc\snetem\s+[0-9]+:\sdev\s([a-zA-Z0-9-]+)"
             "\s.*\slimit\s[0-9]+\sdelay\s([0-9.]+)[mu]"
             "s[a-zA-Z0-9_.:\s]+Sent\s([\d]+)\sbytes\s[\d]+\spkt\s\(dropped\s[\d]+"
             ",\soverlimits\s[\d]+\srequeues\s[\d]+\)\s*"
             "backlog\s([\dA-Z]+)b\s[\d]+p\srequeues\s[0-9]+")
-        
+        tc_output = subprocess.check_output( 'tc -s qdisc show', shell=True)
+        tc_parse = self.regex.findall(tc_output)
+        self.entries = []
+        for i in dict:
+            for j in tc_parse:
+                if j[0] == i.keys()[0]:
+                    d = i[j[0]]
+                    delay = 0
+                    subnet = d['subnet']
+                    delay = float(d.get('delay'))
+                    entry = (j[0], subnet, int(j[3]), int(j[2]), d['bw'], delay)
+            self.entries.append(entry)
+
     def run(self):
-        try:
-#             t1 = time.time()
-            self.timer = threading.Timer(self.INTERVAL_TIME, self.run).start()
-            tc_output = subprocess.check_output( 'tc -s qdisc show', shell=True)
-            tc_parse = self.regex.findall(tc_output)
-#             netem_entry = [dict(zip(self.NETEM_KEYS,row)) for row in tc_parse]
-#             for i in tc_parse:
-#                 print i
-#            print tc_parse[0]
-#             print time.time() - t1 
-        except (KeyboardInterrupt, SystemExit):
-            if self.timer is not None:
-                self.timer.cancel()
+        #timer
+        self.timer = threading.Timer(self.TIME_INTERVAL, self.run)
+        self.timer.start()
+        
+        # tc
+        tc_output = subprocess.check_output( 'tc -s qdisc show', shell=True)
+        tc_parse = self.regex.findall(tc_output)
+#         nb.update_state()
+        
+        # update ns
+        t = time.time()
+        entry = [self.idx, t - self.last_time]
+        for i in self.entries:
+            for j in tc_parse:
+                if j[0] == i[0]:
+                    entry.append((i[1], int(j[3]), int(j[2]), i[4], i[5]))
+        self.mutex.acquire()
+        self.ns.append(entry)
+        if len(self.ns) > self.NS_QUEUE_SIZE:
+            self.ns.pop(0)
+        self.mutex.release()
+        self.last_time = t
+        self.idx += 1
+
+    def terminate(self):
+        self.timer.cancel()
+
+########################################################################################
+class neighbors_state:
+    " A class to retrieve neighbors state "
+    def __init__(self, *args):
+        self.paths = args
+        pass
+
+    def update_state(self):
+        pass
+#         print 'update_state', self.paths
+#         for i in self.paths:
+#             print i
+
+#######################################################################################
+class rest_reply(object):
+    " A class to prepare and send network state replys "
+    
+    def __init__(self, mutex, ip):
+        self.mutex = mutex
+        self.subnet = int(ip.split('.')[2])
+        self.paths = list()
+        pass
+    
+    def _cp_dispatch(self, vpath):
+        if len(vpath) == 5 and vpath[0] == 'stats':
+            cherrypy.request.params[ 'requester_ip' ] = cherrypy.request.remote.ip
+            cherrypy.request.params[ 'max_entries' ] = vpath.pop()
+            cherrypy.request.params[ 'oldest_idx' ] = vpath.pop()
+            cherrypy.request.params[ 'dst_ip' ] = vpath.pop()
+            cherrypy.request.params[ 'src_ip' ] = vpath.pop()
+            vpath.pop()
+            return self
+        return vpath
+    
+    @cherrypy.expose
+    def index(self, src_ip, dst_ip, oldest_idx, max_entries, requester_ip):
+        src_subnet = int(src_ip.split('.')[2])
+        dst_subnet = int(dst_ip.split('.')[2])
+        oldest_idx = int(oldest_idx)
+        max_entries = int(max_entries)
+        self.mutex.acquire()
+        #merge neighbors state with network state
+        #extract request data
+        l = len(ns.ns)
+        oldest_idx = max(ns.ns[0][0], oldest_idx)
+        max_entries = l if max_entries == 0 else max_entries
+        num_entries = ns.ns[l-1][0] - oldest_idx + 1
+        num_entries = min(num_entries, max_entries)
+        t = ns.ns[l-num_entries:l]
+        self.mutex.release()
+        if src_subnet < dst_subnet:
+            new_list = list()        
+            if self.subnet >= src_subnet and self.subnet < dst_subnet:
+                for i in t:
+                    entry = []
+                    for j in range(2, len(i)):
+                        subnet = int(i[j][0].split('.')[2])
+                        if subnet > self.subnet:
+                            if entry == []:
+                                entry = [i[0], round(i[1], 3), 0]
+                            entry += list(i[j][1:])
+                            entry[2] += 1
+#                             print subnet, self.subnet, dst_subnet
+                    if entry != []:        
+                        new_list.append(entry)
+            return str(new_list)
+        elif src_subnet > dst_subnet:
+            new_list = list()
+            if self.subnet <= src_subnet and self.subnet > dst_subnet:
+                for i in t:
+                    entry = []
+                    for j in range(2, len(i)):
+                        subnet = int(i[j][0].split('.')[2])
+                        if subnet < self.subnet:
+                            if entry == []:
+                                entry = [i[0], round(i[1], 3), 0]
+                            entry += list(i[j][1:])
+                            entry[2] += 1
+                    if entry != []:        
+                        new_list.append(entry)
+            return str(new_list)
+        else:
+            return str(list())
 
 ########################################################################################
 if __name__ == '__main__':
-    ns = network_state()
-    ns.run()
+    mutex = threading.Lock()
+    ns_dict = [ {'s2-eth1': {'delay':60.0, 'bw': 5, 'subnet':'192.168.10.0'} }, 
+                {'s4-eth2' : {'delay':80.0, 'bw': 5, 'subnet':'192.168.12.0'} } ]
+    ns = network_state( mutex, ns_dict )
+    nb = neighbors_state(('192.168.12.0', '192.168.13.0'), ('192.168.13.0', '192.168.12.0'))
+
+    logging.getLogger("cherrypy").propagate = False
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s.%(msecs)03d "
+        "[%(levelname)s] (%(name)s) %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    cherrypy.config.update({
+            'environment': 'production',
+            'server.socket_port': 2400,
+            'log.screen': False,
+            'log.access_file': os.path.join(os.getcwd(), 'access.log'),
+            'log.error_file': os.path.join(os.getcwd(), 'error.log')
+    })
+
+
+
+    conf = {'global' : {'server.socket_host': '192.168.21.100',
+                        'server.socket_port': 8080} }
+    cherrypy.quickstart(rest_reply(mutex, '192.168.11.0'), config=conf)
 
 
 ########################################################################################

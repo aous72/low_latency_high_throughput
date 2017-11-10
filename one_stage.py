@@ -42,8 +42,8 @@ class linux_router( Host ):
         self.cmd( 'sysctl net.ipv4.ip_forward=1' )
 
     def set_routing_table(self, first_two_octets, subnet, dev):
-    	assert subnet in [11, 12, 13, 21, 22, 23]
-    	t = [10, 11, 12, 13] if subnet in [11, 12, 13] else [20, 21, 22, 23]
+        assert subnet in [11, 12, 13, 21, 22, 23]
+        t = [10, 11, 12, 13] if subnet in [11, 12, 13] else [20, 21, 22, 23]
         for x in t: #host config is only for non-default
             if x < subnet - 1:
                 self.cmd('route add -net ' + first_two_octets + '.' + str(x) + '.0'
@@ -72,41 +72,49 @@ class one_stage( Topo ):
         this_subnet = int(base_ip[base_ip.rfind('.')+1:]) # third octet as int
         default_route_ip = base_ip +'.1'
         default_route = 'via ' + default_route_ip
-        
+
         #switches
         s1 = self.addSwitch( 's1', listenPort='6641')
         s2 = self.addSwitch( 's2', listenPort='6642')
         s3 = self.addSwitch( 's3', listenPort='6643')
         s4 = self.addSwitch( 's4', listenPort='6644')
-                
+        s5 = self.addSwitch( 's5', listenPort='6645')
+        s6 = self.addSwitch( 's6', listenPort='6646')
+
         #hosts
         r1 = self.addHost( 'r1', cls=linux_router, ip=default_route_ip+'/24' )
         self.addLink( s1, r1, txo=False, rxo=False )
                 
         h2 = self.addHost( 'h2', ip=base_ip+'.2/24', defaultRoute = default_route )
-        self.addLink( h2, s1, txo=False, rxo=False )
+        self.addLink( h2, s3, txo=False, rxo=False )
         h3 = self.addHost( 'h3', ip=base_ip+'.3/24', defaultRoute = default_route )
-        self.addLink( h3, s1, txo=False, rxo=False )
+        self.addLink( h3, s3, txo=False, rxo=False )
         
-    	#links between switches   
-        self.addLink( s1, s2, txo=False, rxo=False )
-        self.addLink( s2, s3, bw=params[ 'low_bw'  ], delay=1, txo=False, rxo=False )
-        self.addLink( s3, s4, delay=params[ 'ext_delay' ], txo=False, rxo=False )
+        #links between switches   
+        self.addLink( s1, s2, bw=params[ 'low_bw'  ], delay=1, txo=False, rxo=False )
+        self.addLink( s2, s3, txo=False, rxo=False )
+        self.addLink( s3, s4, txo=False, rxo=False )
+        self.addLink( s4, s5, bw=params[ 'low_bw'  ], delay=1, txo=False, rxo=False )
+        self.addLink( s5, s6, delay=params[ 'ext_delay' ], txo=False, rxo=False )
 
-        # out of band network
-		#switches
-        s5 = self.addSwitch( 's5', listenPort='6645')
-        s6 = self.addSwitch( 's6', listenPort='6646')
+        # out of band network switches
         s7 = self.addSwitch( 's7', listenPort='6647')
+        s8 = self.addSwitch( 's8', listenPort='6648')
+        s9 = self.addSwitch( 's9', listenPort='6649')
         
         # hosts
         r2 = self.addHost( 'r2', cls=linux_router, ip=first_two_octets + '.' 
             + str(this_subnet + 10) + '.1/24' )
-        self.addLink( s5, r2, txo=False, rxo=False )
+        self.addLink( s7, r2, txo=False, rxo=False )
 
-		# links between switches
-        self.addLink( s5, s6, txo=False, rxo=False )
-        self.addLink( s6, s7, delay=params[ 'ext_delay' ], txo=False, rxo=False )
+        # links between switches
+        self.addLink( s7, s8, txo=False, rxo=False )
+        self.addLink( s8, s9, delay=params[ 'ext_delay' ], txo=False, rxo=False )
+        
+        # cross link between control and data
+        r3 = self.addHost( 'r3', cls=linux_router )
+        self.addLink( s2, r3, txo=False, rxo=False )
+        self.addLink( s7, r3, txo=False, rxo=False )
 
 ########################################################################################
 def add_root_node(net, first_two_octets, subnet):
@@ -117,7 +125,7 @@ def add_root_node(net, first_two_octets, subnet):
 
     base_ip = first_two_octets + '.' + str(subnet)    
     root_node = Host( 'root', inNamespace=False, ip=base_ip+'.100/24' )
-    link = net.addLink( root_node, net.getNodeByName('s5'), txo=False, rxo=False )
+    link = net.addLink( root_node, net.getNodeByName('s7'), txo=False, rxo=False )
     link.intf1.setIP(base_ip+'.100', 24);
     root_node.cmd('ip route flush table main'); # empty routing table
     root_node.cmd('route add -net ' + first_two_octets + '.' + str(subnet)
@@ -128,6 +136,10 @@ def add_root_node(net, first_two_octets, subnet):
                 + ' netmask 255.255.255.0 gw ' 
                 + first_two_octets + '.' + str(subnet) + '.254'
                 + ' dev ' + link.intf1.name)
+    # cross link between data and control planes
+    root_node.cmd('route add -net ' + first_two_octets + '.' + str(subnet - 10) 
+                + '.0' + ' netmask 255.255.255.0 gw ' 
+                + first_two_octets + '.' + str(subnet) + '.250')
     root_node.cmd('/usr/sbin/sshd -D -o UseDNS=no -u0 &')
 
     return root_node
@@ -136,15 +148,15 @@ def add_root_node(net, first_two_octets, subnet):
 def create_network(argv):
     "Run one stage of network"
 
-	# if we have forgotten to raise them
+    # if we have forgotten to raise them
     call('ifconfig eth0 up', shell=True)    
     call('ifconfig eth1 up', shell=True)
     
-	# about this network
+    # about this network
     base_ip = argv[0][0:argv[0].rfind('.')] # the first three octets
     first_two_octets = base_ip[0:base_ip.rfind('.')] # first two octets    
     this_subnet = int(base_ip[base_ip.rfind('.')+1:]) # third octet as int
-    	
+    
     # mininet
     topo = one_stage( ip = base_ip, low_bw=5, ext_delay=60000 )
     net = Mininet( topo, link=TCLink, 
@@ -159,10 +171,10 @@ def create_network(argv):
     r1.cmd('ifconfig eth0 ' + eth0_ip + ' netmask 255.255.255.0')
     
     # add eth1 to switch s6 and set its ip
-    s4 = net.getNodeByName('s4')
-    Intf('eth1', s4)
+    s6 = net.getNodeByName('s6')
+    Intf('eth1', s6)
     eth1_ip = first_two_octets + '.' + str(this_subnet) + '.253'
-    s4.cmd('ifconfig eth1 ' + eth1_ip + ' netmask 255.255.255.0')
+    s6.cmd('ifconfig eth1 ' + eth1_ip + ' netmask 255.255.255.0')
     
     # add eth2 to router 2
     r2 = net.getNodeByName('r2')
@@ -170,11 +182,11 @@ def create_network(argv):
     eth2_ip =  first_two_octets + '.' + str(this_subnet + 10 - 1) + '.254'
     r2.cmd('ifconfig eth2 ' + eth2_ip + ' netmask 255.255.255.0')
 
-    # add eth1 to switch s6 and set its ip
-    s7 = net.getNodeByName('s7')
-    Intf('eth3', s7)
+    # add eth1 to switch s9 and set its ip
+    s9 = net.getNodeByName('s9')
+    Intf('eth3', s9)
     eth3_ip = first_two_octets + '.' + str(this_subnet + 10) + '.253'    
-    s7.cmd('ifconfig eth3 ' + eth3_ip + ' netmask 255.255.255.0')
+    s9.cmd('ifconfig eth3 ' + eth3_ip + ' netmask 255.255.255.0')
     
     # add routing tables
     r1.set_routing_table(first_two_octets, this_subnet, 'eth0')
@@ -185,12 +197,27 @@ def create_network(argv):
                 h.cmd('route add -net ' + first_two_octets + '.' + str(x) + '.0'
                     + ' netmask 255.255.255.0 gw ' 
                     + first_two_octets + '.' + str(this_subnet) + '.254')
+            h.cmd('route add -net ' + first_two_octets + '.' + str(this_subnet + 10) 
+                + '.0' + ' netmask 255.255.255.0 gw ' 
+                + first_two_octets + '.' + str(this_subnet) + '.250')
+            
+
+    # configuration for router 3
+    r3 = net.getNodeByName('r3')
+    r3_eth0 = r3.intf('r3-eth0')
+    r3_eth0.setIP(first_two_octets + '.' + str(this_subnet) + '.250', 24)
+    r3_eth1 = r3.intf('r3-eth1')
+    r3_eth1.setIP(first_two_octets + '.' + str(this_subnet + 10) + '.250', 24)
+    r3.cmd('route add -net ' + first_two_octets + '.' + str(this_subnet)
+            + '.0 netmask 255.255.255.0 dev r3-eth0')
+    r3.cmd('route add -net ' + first_two_octets + '.' + str(this_subnet + 10)
+            + '.0 netmask 255.255.255.0 dev r3-eth1')
     
     # run sshd on hosts
     for h in net.hosts:
         h.cmd('/usr/sbin/sshd -D -o UseDNS=no -u0 &')
 
-	# root node    
+    # root node    
     root_node = add_root_node(net, first_two_octets, this_subnet + 10)
 
     #net operation
@@ -215,6 +242,6 @@ def create_network(argv):
 if __name__ == '__main__':
     setLogLevel( 'info' )
     if len(argv) != 2:
-        print 'Please specify subnet'
+        print ('Please specify subnet')
     else:
        create_network(argv[1:])
