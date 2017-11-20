@@ -42,8 +42,8 @@ class linux_router( Host ):
         self.cmd( 'sysctl net.ipv4.ip_forward=1' )
 
     def set_routing_table(self, first_two_octets, subnet, dev):
-        assert subnet in [11, 12, 13, 21, 22, 23]
-        t = [10, 11, 12, 13] if subnet in [11, 12, 13] else [20, 21, 22, 23]
+        assert subnet in [11, 12, 13, 14, 21, 22, 23, 24]
+        t = [10, 11, 12, 13, 14] if subnet in [11, 12, 13, 14] else [20, 21, 22, 23, 24]
         for x in t: #host config is only for non-default
             if x < subnet - 1:
                 self.cmd('route add -net ' + first_two_octets + '.' + str(x) + '.0'
@@ -131,7 +131,7 @@ def add_root_node(net, first_two_octets, subnet):
     root_node.cmd('route add -net ' + first_two_octets + '.' + str(subnet)
             + '.0 netmask 255.255.255.0 dev ' + link.intf1.name)
     root_node.cmd('route add default gw ' + base_ip + '.1' + ' dev ' + link.intf1.name)
-    for x in range(subnet+1, 24): #host config is only for non-default route
+    for x in range(subnet+1, 25): #host config is only for non-default route
         root_node.cmd('route add -net ' + first_two_octets + '.' + str(x) + '.0'
                 + ' netmask 255.255.255.0 gw ' 
                 + first_two_octets + '.' + str(subnet) + '.254'
@@ -193,7 +193,7 @@ def create_network(argv):
     r2.set_routing_table(first_two_octets, this_subnet + 10, 'eth2')    
     for h in net.hosts:
         if h.name[0] != 'r': # host other than a router config
-            for x in range(this_subnet+1, 14): #host config is only for non-default
+            for x in range(this_subnet+1, 15): #host config is only for non-default
                 h.cmd('route add -net ' + first_two_octets + '.' + str(x) + '.0'
                     + ' netmask 255.255.255.0 gw ' 
                     + first_two_octets + '.' + str(this_subnet) + '.254')

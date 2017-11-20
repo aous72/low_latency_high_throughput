@@ -28,6 +28,11 @@ class buffer_processor:
     def buf_len(self):
         return len(self.buf)
 
+    def extract_len(self, length):
+        t = self.buf[:length]
+        self.buf = self.buf[length:]
+        return t
+
     def extract_buf(self):
         t = self.buf
         self.flush_buf()
@@ -40,14 +45,14 @@ class buffer_processor:
 def combine(lst, new_lst):
     ls = len(lst)
     lt = len(new_lst)
-    if ls != 0 and lt != 0:
+    if ls > 1 and lt > 1:
         lst_st = int(lst[0][0:lst[0].find(',')])         #first index
         nlst_st = int(new_lst[0][0:new_lst[0].find(',')])    
         lst += new_lst[max(lst_st + ls - nlst_st, 0):]
     else:
         lst += new_lst
     del lst[:-neighbor_state.NB_QUEUE_SIZE]
-    print new_lst
+    print lst
 
 ########################################################################################
 class client(asyncore.dispatcher):
@@ -67,29 +72,32 @@ class client(asyncore.dispatcher):
     def handle_read(self):
         t = self.recv(8192)
         self.rx_buf.add(t)
-        if not self.receiving_data:
-            t = self.rx_buf.extract_line()
-            while t != '':
-                if t == '\r\n':
-                    if self.rx_buf.buf_len() == self.data_size:
-                        t = self.rx_buf.extract_buf()
-                        self.data_size = 0
-                        s = self.requests.popleft()
-                        combine(s, t[2:-2].split('], ['))
-                    else:
-                        self.receiving_data = True
-                        return
-                s = t.find('Content-Length: ')
-                if s == 0: # Content length found
-                    self.data_size = int(t[s+16:])
+        while self.rx_buf.buf_len():
+            if not self.receiving_data:
                 t = self.rx_buf.extract_line()
-        else:
-            if self.rx_buf.buf_len() == self.data_size:
-                t = self.rx_buf.extract_buf()
-                self.receiving_data = False
-                self.data_size = 0
-                s = self.requests.popleft()
-                combine(s, t[2:-2].split('], ['))
+                while t != '':
+                    if t == '\r\n':
+                        if self.rx_buf.buf_len() >= self.data_size:
+                            t = self.rx_buf.extract_len(self.data_size)
+                            self.data_size = 0
+                            s = self.requests.popleft()
+                            combine(s, t[2:-2].split('], ['))
+                        else:
+                            self.receiving_data = True
+                            return
+                    s = t.find('Content-Length: ')
+                    if s == 0: # Content length found
+                        self.data_size = int(t[s+16:])
+                    t = self.rx_buf.extract_line()
+            else:
+                if self.rx_buf.buf_len() >= self.data_size:
+                    t = self.rx_buf.extract_len(self.data_size)
+                    self.receiving_data = False
+                    self.data_size = 0
+                    s = self.requests.popleft()
+                    combine(s, t[2:-2].split('], ['))
+                else:
+                    return
 
     def writable(self):
         return (len(self.tx_buf) > 0)
@@ -174,10 +182,9 @@ class neighbor_state:
 
 ########################################################################################
 if __name__ == '__main__':
-#     a = client(('192.168.21.100', 8080))
     mutex = threading.Lock()
     nb = neighbor_state(mutex)
-    nb.add_path(('192.168.21.100', 8080), ('192.168.10.2','192.168.13.3') )
+    nb.add_path(('192.168.22.100', 8080), ('192.168.10.2','192.168.13.3') )
     asyncore.loop()
 
 ########################################################################################

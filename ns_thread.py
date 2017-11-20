@@ -20,7 +20,7 @@ class network_state:
     " A class to obtain network state every 50ms "
 
     # constants
-    START_DELAY = 0.5 # 3s delayed start
+    START_DELAY = 2.5 # 3s delayed start
     TIME_INTERVAL = 0.05 # 50ms intervals
     NS_QUEUE_SIZE = 5 # three networks, 100 for each
 
@@ -66,15 +66,15 @@ class network_state:
         # tc
         tc_output = subprocess.check_output( 'tc -s qdisc show', shell=True)
         tc_parse = self.regex.findall(tc_output)
-#         nb.update_state()
         
         # update ns
         t = time.time()
-        entry = [self.idx, t - self.last_time]
+        delta = t - self.last_time
+        entry = [self.idx]
         for i in self.entries:
             for j in tc_parse:
                 if j[0] == i[0]:
-                    entry.append((i[1], int(j[3]), int(j[2]), i[4], i[5]))
+                    entry.append((i[1], int(j[3]), int(j[2]), i[4], i[5], delta))
         self.mutex.acquire()
         self.ns.append(entry)
         if len(self.ns) > self.NS_QUEUE_SIZE:
@@ -85,19 +85,6 @@ class network_state:
 
     def terminate(self):
         self.timer.cancel()
-
-########################################################################################
-class neighbors_state:
-    " A class to retrieve neighbors state "
-    def __init__(self, *args):
-        self.paths = args
-        pass
-
-    def update_state(self):
-        pass
-#         print 'update_state', self.paths
-#         for i in self.paths:
-#             print i
 
 #######################################################################################
 class rest_reply(object):
@@ -134,36 +121,34 @@ class rest_reply(object):
         max_entries = l if max_entries == 0 else max_entries
         num_entries = ns.ns[l-1][0] - oldest_idx + 1
         num_entries = min(num_entries, max_entries)
-        t = ns.ns[l-num_entries:l]
         self.mutex.release()
         if src_subnet < dst_subnet:
             new_list = list()        
             if self.subnet >= src_subnet and self.subnet < dst_subnet:
-                for i in t:
+                for i in ns.ns[-num_entries:]:
                     entry = []
                     for j in range(2, len(i)):
                         subnet = int(i[j][0].split('.')[2])
                         if subnet > self.subnet:
                             if entry == []:
-                                entry = [i[0], round(i[1], 3), 0]
-                            entry += list(i[j][1:])
-                            entry[2] += 1
-#                             print subnet, self.subnet, dst_subnet
+                                entry = [i[0], 0]
+                            entry += list(i[j][1:-1]) + [round(i[j][-1], 3)]
+                            entry[1] += 1
                     if entry != []:        
                         new_list.append(entry)
             return str(new_list)
         elif src_subnet > dst_subnet:
             new_list = list()
             if self.subnet <= src_subnet and self.subnet > dst_subnet:
-                for i in t:
+                for i in ns.ns[-num_entries:]:
                     entry = []
                     for j in range(2, len(i)):
                         subnet = int(i[j][0].split('.')[2])
                         if subnet < self.subnet:
                             if entry == []:
-                                entry = [i[0], round(i[1], 3), 0]
-                            entry += list(i[j][1:])
-                            entry[2] += 1
+                                entry = [i[0], 0]
+                            entry += list(i[j][1:-1]) + [round(i[j][-1], 3)]
+                            entry[1] += 1
                     if entry != []:        
                         new_list.append(entry)
             return str(new_list)
@@ -176,24 +161,22 @@ if __name__ == '__main__':
     ns_dict = [ {'s2-eth1': {'delay':60.0, 'bw': 5, 'subnet':'192.168.10.0'} }, 
                 {'s4-eth2' : {'delay':80.0, 'bw': 5, 'subnet':'192.168.12.0'} } ]
     ns = network_state( mutex, ns_dict )
-    nb = neighbors_state(('192.168.12.0', '192.168.13.0'), ('192.168.13.0', '192.168.12.0'))
 
+    # http server
     logging.getLogger("cherrypy").propagate = False
     logging.basicConfig(level=logging.INFO, format="%(asctime)s.%(msecs)03d "
         "[%(levelname)s] (%(name)s) %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-    cherrypy.config.update({
+    cherrypy.config.update({ 'global': {
             'environment': 'production',
-            'server.socket_port': 2400,
             'log.screen': False,
             'log.access_file': os.path.join(os.getcwd(), 'access.log'),
-            'log.error_file': os.path.join(os.getcwd(), 'error.log')
-    })
+            'log.error_file': os.path.join(os.getcwd(), 'error.log'),
+            'engine.autoreload.on': False,
+            'server.socket_host': '192.168.21.100',
+            'server.socket_port': 8080            
+    }})
 
-
-
-    conf = {'global' : {'server.socket_host': '192.168.21.100',
-                        'server.socket_port': 8080} }
-    cherrypy.quickstart(rest_reply(mutex, '192.168.11.0'), config=conf)
+    cherrypy.quickstart(rest_reply(mutex, '192.168.11.0'))
 
 
 ########################################################################################
