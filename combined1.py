@@ -58,14 +58,12 @@ class client(asyncore.dispatcher):
         self.server = server
         
     @staticmethod
-    def combine_neighbor_states(lst, new_lst):
+    def combine_bs(lst, new_lst, last_idx):
         if lst != []:
-            ls = len(lst)
-            lt = len(new_lst)
-            lst_st = int(lst[0][0:lst[0].find(',')])         #first index
+            lst_end = int(lst[-1][0:lst[-1].find(',')])         #last index
             nlst_st = int(new_lst[0][0:new_lst[0].find(',')])    
-            lst += new_lst[max(lst_st + ls - nlst_st, 0):]
-        else:
+            lst += new_lst[max(lst_end + 1 - nlst_st, 0):]
+        elif new_lst != []:
             lst += new_lst
         del lst[:-neighbor_state.NB_QUEUE_SIZE]
         
@@ -87,9 +85,12 @@ class client(asyncore.dispatcher):
                         if self.rx_buf.buf_len() >= self.data_size:
                             t = self.rx_buf.extract_len(self.data_size)
                             self.data_size = 0
-                            s = self.requests.popleft()
-                            if t != '[]':
-                                client.combine_neighbor_states(s, t[2:-2].split('], ['))
+                            s, last_idx, p = self.requests.popleft()
+                            if t != '[]' and t[0] == '[':
+                                client.combine_bs(s, t[2:-2].split('], ['), last_idx[p])
+                                if s != []:
+                                    last_entry = s[-1]
+                                    last_idx[p] = int(last_entry[0:last_entry.find(',')])
                         else:
                             self.receiving_data = True
                             return
@@ -102,9 +103,12 @@ class client(asyncore.dispatcher):
                     t = self.rx_buf.extract_len(self.data_size)
                     self.receiving_data = False
                     self.data_size = 0
-                    s = self.requests.popleft()
-                    if t != '[]':
-                        client.combine_neighbor_states(s, t[2:-2].split('], ['))
+                    s, last_idx, p = self.requests.popleft()
+                    if t != '[]' and t[0] == '[':
+                        client.combine_bs(s, t[2:-2].split('], ['), last_idx[p])
+                        if s != []:
+                            last_entry = s[-1]
+                            last_idx[p] = int(last_entry[0:last_entry.find(',')])
                 else:
                     return
 
@@ -138,7 +142,7 @@ class neighbor_state:
 
     # constants
     START_DELAY = 5 # 5s delayed start
-    TIME_INTERVAL = 0.05 # 50ms intervals
+    TIME_INTERVAL = 0.3 # 50ms intervals
     NB_QUEUE_SIZE = 15 # 15 per state table
 
     def __init__(self, mutex):
@@ -149,6 +153,7 @@ class neighbor_state:
         self.connected = False
         self.timer = threading.Timer(self.START_DELAY, self.run)
         self.timer.start()
+        self.last_idx = []
 
     @staticmethod
     def start_thread():
@@ -165,13 +170,9 @@ class neighbor_state:
         for s in range(len(self.clients)):
             for p in range(len(self.paths[s])):
                 r1,r2 = self.paths[s][p]
-                if bool(self.states[s][p]):
-                    last_entry = self.states[s][p][-1]
-                    lidx = last_entry[0:last_entry.find(',')]
-                else:
-                    lidx = '0'
-                self.clients[s].request(self.states[s][p], "GET /stats/"+r1+"/"
-                +r2+"/"+lidx+"/0/ HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                self.clients[s].request( (self.states[s][p], self.last_idx[s], p), 
+                    "GET /stats/"+r1+"/"+r2+"/"+str(self.last_idx[s][p])+
+                    "/0/ HTTP/1.1\r\nHost: localhost\r\n\r\n")
 
     def add_path(self, server, path):
         # find if we know the server
@@ -181,6 +182,7 @@ class neighbor_state:
             idx = len(self.clients) - 1
             self.paths.append([])
             self.states.append([])
+            self.last_idx.append([])
         else :
             idx = match[0]
         
@@ -189,14 +191,15 @@ class neighbor_state:
         if not match:
             self.paths[idx].append(path)
             self.states[idx].append(list())
+            self.last_idx[idx].append(0)
 
 ########################################################################################
 class network_state:
     " A class to obtain network state every 50ms "
 
     # constants
-    START_DELAY = 2.5 # 2.5s delayed start
-    TIME_INTERVAL = 1 # 50ms intervals
+    START_DELAY = 10 # 2.5s delayed start
+    TIME_INTERVAL = 0.3 # 50ms intervals
     NS_QUEUE_SIZE = 5 # per state table
     REC_OFFSET = 2
     REC_SIZE = 5
@@ -237,11 +240,12 @@ class network_state:
         self.paths = list()
         self.states = list()
         self.last_entries = list()
+        self.last_idx = list()
         self.timer = threading.Timer(self.START_DELAY, self.run)
         self.timer.start()
 
     @staticmethod
-    def combine_entries(u_num, u, v_num, v, self_idx, last_entry):
+    def combine_entries(u_num, u, v_num, v, self_idx, last_entry, debug=False):
         entry = [self_idx, u_num+v_num]
         for i in range(0, u_num+v_num):
             entry.extend((0, 0, 0.0, 0.0, 0.0))
@@ -251,8 +255,6 @@ class network_state:
                 nr = (len(t) - network_state.REC_OFFSET) / network_state.REC_SIZE
                 for i in range(0, nr):
                     idx1 = network_state.REC_OFFSET + i * network_state.REC_SIZE
-#                     idx2 = idx1 + i * network_state.REC_OFFSET
-#                     print 246, t, idx1, idx2, t[idx1], t[idx2]
                     entry[idx1]    = int(t[idx1])
                     entry[idx1+1] += int(t[idx1+1])
                     entry[idx1+2]  = float(t[idx1+2])
@@ -273,8 +275,6 @@ class network_state:
                 nr = (len(t) - network_state.REC_OFFSET) / network_state.REC_SIZE
                 for i in range(0, nr):
                     idx1 = network_state.REC_OFFSET + i * network_state.REC_SIZE
-#                     idx2 = idx1 + i * network_state.REC_OFFSET
-#                     print 268, t, idx1, idx2, t[idx1], t[idx2]
                     entry[off + idx1]      = int(t[idx1])
                     entry[off + idx1 + 1] += int(t[idx1 + 1])
                     entry[off + idx1 + 2]  = float(t[idx1 + 2])
@@ -289,6 +289,8 @@ class network_state:
                 entry[off + idx+2] = last_entry[off + idx+2]
                 entry[off + idx+3] = last_entry[off + idx+3]
                 entry[off + idx+4] = 0.0
+        if debug:
+            print entry
         return entry
     
     def run(self):
@@ -328,9 +330,9 @@ class network_state:
             + str(self.int_this_subnet-1) + '.0'
 
         #start with paths from the adjacent clients
-        r_entries = []
-        for i in self.intf_dest:
-            tnet = self.this_subnet[0] + '.' + self.this_subnet[1] + '.' + str(i) + '.0'
+        r_entries = [[] for i in range(len(self.intf_dest))]
+        for i, val in enumerate(self.intf_dest):
+            tnet = self.this_subnet[0]+'.'+self.this_subnet[1]+'.'+str(val)+'.0'
             t = (tnet, cnet)
             s = []
             for j in range(len(self.nb.clients)):
@@ -338,13 +340,18 @@ class network_state:
                     idx = self.nb.paths[j].index(t)
                     s = self.nb.states[j][idx]
                     self.nb.states[j][idx] = []
-                r_entries.append(s)
+                    if s != []:
+                        idx = self.paths.index(t)
+                        fi = int(s[0][:s[0].find(',')]) #first index
+                        li = int(s[-1][:s[-1].find(',')]) # last index
+                        s = s[0:li-self.last_idx[idx]]
+                        if s != []:
+                            self.last_idx[idx] = li
+                r_entries[i] = s
         #other paths
         for i, path in enumerate(self.paths):
             obj_src = int(path[0].split('.')[2])
             obj_dst = int(path[1].split('.')[2])
-            if abs(obj_src - obj_dst) == 1:
-                continue
             assert obj_src == self.int_this_subnet or obj_dst == self.int_this_subnet
             if obj_src < self.int_this_subnet:
                 #neighbor's list
@@ -359,15 +366,15 @@ class network_state:
                             idx = self.nb.paths[j].index(t)
                             u = self.nb.states[j][idx]
                             self.nb.states[j][idx] = []
+                            if u != []:
+                                fi = int(u[0][:u[0].find(',')]) #first index
+                                li = int(u[-1][:u[-1].find(',')]) # last index
+                                u = u[0:li-self.last_idx[i]]
+                                if u != []:
+                                    self.last_idx[i] = li
                 # from r_entries, this_subnet - 1 to this_subnet
                 idx = self.intf_dest.index(self.int_this_subnet - 1)
                 v = r_entries[idx]
-#                 t = (lnet, cnet)
-#                 for j in range(len(self.nb.clients)):
-#                     if t in self.nb.paths[j]:
-#                         idx = self.nb.paths[j].index(t)
-#                         v = self.nb.states[j][idx]
-#                         self.nb.states[j][idx] = []
                 entry = network_state.combine_entries(num_sw-1, u, 1, v, self.idx, \
                     self.last_entries[i])
                 self.last_entries[i] = entry
@@ -386,15 +393,15 @@ class network_state:
                             idx = self.nb.paths[j].index(t)
                             u = self.nb.states[j][idx]
                             self.nb.states[j][idx] = []
+                            if u != []:
+                                fi = int(u[0][:u[0].find(',')]) #first index
+                                li = int(u[-1][:u[-1].find(',')]) # last index
+                                u = u[0:li-self.last_idx[i]]
+                                if u != []:
+                                    self.last_idx[i] = li
                 # from r_entries, this_subnet + 1 to this_subnet
                 idx = self.intf_dest.index(self.int_this_subnet + 1)
                 v = r_entries[idx]
-#                 t = (hnet, cnet)
-#                 for j in range(len(self.nb.clients)):
-#                     if t in self.nb.paths[j]:
-#                         idx = self.nb.paths[j].index(t)
-#                         v = self.nb.states[j][idx]
-#                         self.nb.states[j][idx] = []
                 entry = network_state.combine_entries(num_sw-1, u, 1, v, self.idx, \
                     self.last_entries[i])
                 self.last_entries[i] = entry
@@ -412,12 +419,18 @@ class network_state:
                 v = [str(v)[1:-1]]
                 # from this_subnet - 1 to low
                 t = (lnet, path[1])
-                if path[1] != hnet:
+                if path[1] != lnet:
                     for j in range(len(self.nb.clients)):
                         if t in self.nb.paths[j]:
                             idx = self.nb.paths[j].index(t)
                             u = self.nb.states[j][idx]
                             self.nb.states[j][idx] = []
+                            if u != []:
+                                fi = int(u[0][:u[0].find(',')]) #first index
+                                li = int(u[-1][:u[-1].find(',')]) # last index
+                                u = u[0:li-self.last_idx[i]]
+                                if u != []:
+                                    self.last_idx[i] = li
                 entry = network_state.combine_entries(1, v, num_sw-1, u, self.idx, \
                     self.last_entries[i])
                 self.last_entries[i] = entry
@@ -441,6 +454,12 @@ class network_state:
                             idx = self.nb.paths[j].index(t)
                             u = self.nb.states[j][idx]
                             self.nb.states[j][idx] = []
+                            if u != []:
+                                fi = int(u[0][:u[0].find(',')]) #first index
+                                li = int(u[-1][:u[-1].find(',')]) # last index
+                                u = u[0:li-self.last_idx[i]]
+                                if u != []:
+                                    self.last_idx[i] = li
                 entry = network_state.combine_entries(1, v, num_sw-1, u, self.idx, \
                     self.last_entries[i])
                 self.last_entries[i] = entry
@@ -456,6 +475,7 @@ class network_state:
             self.paths.append(path)
             self.states.append(list())
             self.last_entries.append(list())
+            self.last_idx.append(0)
 
     def terminate(self):
         self.timer.cancel()
@@ -518,7 +538,7 @@ def start_service(argv):
         s = first_two_octets + '.' + str(this_subnet-1) + '.0'
         nb.add_path( (contr_ip, 8080), (s,d) )
         d = s
-        for i in range(this_subnet-2, 11, -1):
+        for i in range(this_subnet-2, 10, -1):
             s = first_two_octets + '.' + str(i) + '.0'
             nb.add_path( (contr_ip, 8080), (s,d) )
             nb.add_path( (contr_ip, 8080), (d,s) )
