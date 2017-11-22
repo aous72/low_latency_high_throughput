@@ -51,9 +51,10 @@ class buffer_processor:
 ########################################################################################
 class client(asyncore.dispatcher):
 
-    def __init__(self, server):
+    def __init__(self, server, mutex):
         asyncore.dispatcher.__init__(self)
         self.rx_buf = buffer_processor()
+        self.mutex = mutex
         self.reset()
         self.server = server
         
@@ -73,10 +74,12 @@ class client(asyncore.dispatcher):
     def handle_close(self):
         self.close()
         self.reset()
+        self.start_connection()
 
     def handle_read(self):
         t = self.recv(8192)
         self.rx_buf.add(t)
+        self.mutex.acquire()
         while self.rx_buf.buf_len():
             if not self.receiving_data:
                 t = self.rx_buf.extract_line()
@@ -86,13 +89,14 @@ class client(asyncore.dispatcher):
                             t = self.rx_buf.extract_len(self.data_size)
                             self.data_size = 0
                             s, last_idx, p = self.requests.popleft()
-                            if t != '[]' and t[0] == '[':
+                            if t != '' and t != '[]' and t[0] == '[':
                                 client.combine_bs(s, t[2:-2].split('], ['), last_idx[p])
                                 if s != []:
                                     last_entry = s[-1]
                                     last_idx[p] = int(last_entry[0:last_entry.find(',')])
                         else:
                             self.receiving_data = True
+                            self.mutex.release()
                             return
                     s = t.find('Content-Length: ')
                     if s == 0: # Content length found
@@ -104,13 +108,15 @@ class client(asyncore.dispatcher):
                     self.receiving_data = False
                     self.data_size = 0
                     s, last_idx, p = self.requests.popleft()
-                    if t != '[]' and t[0] == '[':
+                    if t != '' and t != '[]' and t[0] == '[':
                         client.combine_bs(s, t[2:-2].split('], ['), last_idx[p])
                         if s != []:
                             last_entry = s[-1]
                             last_idx[p] = int(last_entry[0:last_entry.find(',')])
                 else:
+                    self.mutex.release()
                     return
+        self.mutex.release()
 
     def writable(self):
         return (len(self.tx_buf) > 0)
@@ -120,12 +126,14 @@ class client(asyncore.dispatcher):
         self.tx_buf = self.tx_buf[sent:]
 
     def reset(self):
+        self.mutex.acquire()
         self.tx_buf = ''
         self.rx_buf.flush_buf() # flush buffer
         self.receiving_data = False
         self.data_size = 0
         self.requests = collections.deque()
         self.closed = True
+        self.mutex.release()
 
     def start_connection(self):
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -141,8 +149,8 @@ class neighbor_state:
     " A class to obtain network state every 50ms "
 
     # constants
-    START_DELAY = 5 # 5s delayed start
-    TIME_INTERVAL = 0.3 # 50ms intervals
+    START_DELAY = 10 # 5s delayed start
+    TIME_INTERVAL = 0.4 # 50ms intervals
     NB_QUEUE_SIZE = 15 # 15 per state table
 
     def __init__(self, mutex):
@@ -162,6 +170,7 @@ class neighbor_state:
     def run(self):
         self.timer = threading.Timer(self.TIME_INTERVAL, self.run)
         self.timer.start()
+        self.mutex.acquire()
         if self.connected == False:
             for c in self.clients:
                 c.start_connection()
@@ -173,12 +182,13 @@ class neighbor_state:
                 self.clients[s].request( (self.states[s][p], self.last_idx[s], p), 
                     "GET /stats/"+r1+"/"+r2+"/"+str(self.last_idx[s][p])+
                     "/0/ HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        self.mutex.release()
 
     def add_path(self, server, path):
         # find if we know the server
         match = [i for i,x in enumerate(self.clients) if x.server == server]
         if not match:
-            self.clients.append(client(server))
+            self.clients.append(client(server, self.mutex))
             idx = len(self.clients) - 1
             self.paths.append([])
             self.states.append([])
@@ -198,11 +208,12 @@ class network_state:
     " A class to obtain network state every 50ms "
 
     # constants
-    START_DELAY = 10 # 2.5s delayed start
-    TIME_INTERVAL = 0.3 # 50ms intervals
+    START_DELAY = 15 # 2.5s delayed start
+    TIME_INTERVAL = 0.4 # 50ms intervals
     NS_QUEUE_SIZE = 5 # per state table
     REC_OFFSET = 2
     REC_SIZE = 5
+    
     def __init__(self, mutex, this_subnet, dict, nb):
         # init network state here
         # mutex is used to lock access to state while it is being used
@@ -232,7 +243,7 @@ class network_state:
             for j in tc_parse:
                 if j[0] == i.keys()[0]:
                     d = i[j[0]]
-                    intf_info = [int(j[2]), float(d['bw']), float(d.get('delay'))]
+                    intf_info = [int(j[2]), int(d['bw']), int(d.get('delay'))]
                     self.intf_dest.append(int(d['subnet'].split('.')[2]))
                     self.intfs.append(j[0])
                     self.intfs_info.append(intf_info)
@@ -248,7 +259,7 @@ class network_state:
     def combine_entries(u_num, u, v_num, v, self_idx, last_entry, debug=False):
         entry = [self_idx, u_num+v_num]
         for i in range(0, u_num+v_num):
-            entry.extend((0, 0, 0.0, 0.0, 0.0))
+            entry.extend((0, 0, 0, 0, 0))
         if u_num != 0 and bool(u):
             for j in range(0, len(u)):
                 t = u[j].split(', ')
@@ -257,9 +268,9 @@ class network_state:
                     idx1 = network_state.REC_OFFSET + i * network_state.REC_SIZE
                     entry[idx1]    = int(t[idx1])
                     entry[idx1+1] += int(t[idx1+1])
-                    entry[idx1+2]  = float(t[idx1+2])
-                    entry[idx1+3]  = float(t[idx1+3])
-                    entry[idx1+4] += float(t[idx1+4])
+                    entry[idx1+2]  = int(t[idx1+2])
+                    entry[idx1+3]  = int(t[idx1+3])
+                    entry[idx1+4] += int(t[idx1+4])
         elif u_num != 0 and bool(last_entry):
             for i in range(0, u_num):
                 idx = network_state.REC_OFFSET + i * network_state.REC_SIZE
@@ -267,7 +278,7 @@ class network_state:
                 entry[idx+1] = 0
                 entry[idx+2] = last_entry[idx+2]
                 entry[idx+3] = last_entry[idx+3]
-                entry[idx+4] = 0.0
+                entry[idx+4] = 0
         if v_num != 0 and bool(v):
             off = u_num * network_state.REC_SIZE
             for j in range(0, len(v)):
@@ -277,9 +288,9 @@ class network_state:
                     idx1 = network_state.REC_OFFSET + i * network_state.REC_SIZE
                     entry[off + idx1]      = int(t[idx1])
                     entry[off + idx1 + 1] += int(t[idx1 + 1])
-                    entry[off + idx1 + 2]  = float(t[idx1 + 2])
-                    entry[off + idx1 + 3]  = float(t[idx1 + 3])
-                    entry[off + idx1 + 4] += float(t[idx1 + 4])
+                    entry[off + idx1 + 2]  = int(t[idx1 + 2])
+                    entry[off + idx1 + 3]  = int(t[idx1 + 3])
+                    entry[off + idx1 + 4] += int(t[idx1 + 4])
         elif v_num != 0 and bool(last_entry):
             off = u_num * network_state.REC_SIZE
             for i in range(0, v_num):
@@ -288,7 +299,7 @@ class network_state:
                 entry[off + idx+1] = 0
                 entry[off + idx+2] = last_entry[off + idx+2]
                 entry[off + idx+3] = last_entry[off + idx+3]
-                entry[off + idx+4] = 0.0
+                entry[off + idx+4] = 0
         if debug:
             print entry
         return entry
@@ -297,6 +308,8 @@ class network_state:
         #timer
         self.timer = threading.Timer(self.TIME_INTERVAL, self.run)
         self.timer.start()
+        
+        self.mutex.acquire()
         
         # tc
         tc_output = subprocess.check_output( 'tc -s qdisc show', shell=True)
@@ -319,7 +332,7 @@ class network_state:
                 queued = queued[0:-1] + '000000'
             queued = int(queued)
             new_entries.append((queued, transmitted,
-                self.intfs_info[i][1], self.intfs_info[i][2], delta))
+                self.intfs_info[i][1], self.intfs_info[i][2], int(1000*delta)))
         
         #assemble all states
         hnet = self.this_subnet[0] + '.' + self.this_subnet[1] + '.' \
@@ -344,7 +357,8 @@ class network_state:
                         idx = self.paths.index(t)
                         fi = int(s[0][:s[0].find(',')]) #first index
                         li = int(s[-1][:s[-1].find(',')]) # last index
-                        s = s[0:li-self.last_idx[idx]]
+                        # li - self.last_idx[i] last elements
+                        s = s[self.last_idx[idx]-li:]
                         if s != []:
                             self.last_idx[idx] = li
                 r_entries[i] = s
@@ -369,7 +383,8 @@ class network_state:
                             if u != []:
                                 fi = int(u[0][:u[0].find(',')]) #first index
                                 li = int(u[-1][:u[-1].find(',')]) # last index
-                                u = u[0:li-self.last_idx[i]]
+                                # li - self.last_idx[i] last elements
+                                u = u[self.last_idx[i]-li:]
                                 if u != []:
                                     self.last_idx[i] = li
                 # from r_entries, this_subnet - 1 to this_subnet
@@ -396,7 +411,8 @@ class network_state:
                             if u != []:
                                 fi = int(u[0][:u[0].find(',')]) #first index
                                 li = int(u[-1][:u[-1].find(',')]) # last index
-                                u = u[0:li-self.last_idx[i]]
+                                # li - self.last_idx[i] last elements
+                                u = u[self.last_idx[i]-li:]
                                 if u != []:
                                     self.last_idx[i] = li
                 # from r_entries, this_subnet + 1 to this_subnet
@@ -428,7 +444,8 @@ class network_state:
                             if u != []:
                                 fi = int(u[0][:u[0].find(',')]) #first index
                                 li = int(u[-1][:u[-1].find(',')]) # last index
-                                u = u[0:li-self.last_idx[i]]
+                                # li - self.last_idx[i] last elements
+                                u = u[self.last_idx[i]-li:]
                                 if u != []:
                                     self.last_idx[i] = li
                 entry = network_state.combine_entries(1, v, num_sw-1, u, self.idx, \
@@ -457,7 +474,8 @@ class network_state:
                             if u != []:
                                 fi = int(u[0][:u[0].find(',')]) #first index
                                 li = int(u[-1][:u[-1].find(',')]) # last index
-                                u = u[0:li-self.last_idx[i]]
+                                # li - self.last_idx[i] last elements
+                                u = u[self.last_idx[i]-li:]
                                 if u != []:
                                     self.last_idx[i] = li
                 entry = network_state.combine_entries(1, v, num_sw-1, u, self.idx, \
@@ -468,6 +486,7 @@ class network_state:
             else:
                 assert 0
         self.idx += 1
+        self.mutex.release()
 
     def add_path(self, path):
         # add path if it is not in the servers list of paths
@@ -505,6 +524,8 @@ class rest_reply(object):
         src_ip = src_ip[0:argv[0].rfind('.')] + '0'
         dst_ip = dst_ip[0:argv[0].rfind('.')] + '0'
         
+        self.mutex.acquire()
+        
         # convert to integers
         oldest_idx = int(oldest_idx)
         max_entries = int(max_entries)
@@ -514,11 +535,15 @@ class rest_reply(object):
         idx = self.ns.paths.index(p)
         s = self.ns.states[idx]
         l = len(s)
-        oldest_idx = max(s[0][0], oldest_idx)
-        max_entries = l if max_entries == 0 else max_entries
-        num_entries = s[l-1][0] - oldest_idx + 1
-        num_entries = min(num_entries, max_entries)
-        return str(s[-num_entries:])
+        t = 'No data yet'
+        if l != 0:
+            oldest_idx = max(s[0][0], oldest_idx)
+            max_entries = l if max_entries == 0 else max_entries
+            num_entries = s[l-1][0] - oldest_idx + 1
+            num_entries = min(num_entries, max_entries)
+            t = str(s[-num_entries:])
+        self.mutex.release()            
+        return t
 
 ########################################################################################
 def start_service(argv):
@@ -559,8 +584,8 @@ def start_service(argv):
     # network_state
     s1 = first_two_octets + '.' + str(this_subnet-1) + '.0'
     s2 = first_two_octets + '.' + str(this_subnet+1) + '.0'    
-    ns_dict = [ {'s2-eth1': {'delay':60.0, 'bw': 5.0, 'subnet':s1 } }, 
-                {'s4-eth2' : {'delay':80.0, 'bw': 5.0, 'subnet':s2 } } ]
+    ns_dict = [ {'s2-eth1': {'delay':60, 'bw': 5000, 'subnet':s1 } }, 
+                {'s4-eth2' : {'delay':80, 'bw': 5000, 'subnet':s2 } } ]
     s = first_two_octets + '.' + str(this_subnet) + '.0'
     ns = network_state( mutex, s, ns_dict, nb )
     for i in range(11,15):
