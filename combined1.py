@@ -88,11 +88,11 @@ class client(asyncore.dispatcher):
                         if self.rx_buf.buf_len() >= self.data_size:
                             t = self.rx_buf.extract_len(self.data_size)
                             self.data_size = 0
-                            s, last_idx, p = self.requests.popleft()
+                            states, last_idx, p = self.requests.popleft()
                             if t != '' and t != '[]' and t[0] == '[':
-                                client.combine_bs(s, t[2:-2].split('], ['), last_idx[p])
-                                if s != []:
-                                    last_entry = s[-1]
+                                client.combine_bs(states[p], t[2:-2].split('], ['), last_idx[p])
+                                if states[p] != []:
+                                    last_entry = states[p][-1]
                                     last_idx[p] = int(last_entry[0:last_entry.find(',')])
                         else:
                             self.receiving_data = True
@@ -107,11 +107,11 @@ class client(asyncore.dispatcher):
                     t = self.rx_buf.extract_len(self.data_size)
                     self.receiving_data = False
                     self.data_size = 0
-                    s, last_idx, p = self.requests.popleft()
+                    states, last_idx, p = self.requests.popleft()
                     if t != '' and t != '[]' and t[0] == '[':
-                        client.combine_bs(s, t[2:-2].split('], ['), last_idx[p])
-                        if s != []:
-                            last_entry = s[-1]
+                        client.combine_bs(states[p], t[2:-2].split('], ['), last_idx[p])
+                        if states[p] != []:
+                            last_entry = states[p][-1]
                             last_idx[p] = int(last_entry[0:last_entry.find(',')])
                 else:
                     self.mutex.release()
@@ -150,7 +150,7 @@ class neighbor_state:
 
     # constants
     START_DELAY = 10 # 5s delayed start
-    TIME_INTERVAL = 0.4 # 50ms intervals
+    TIME_INTERVAL = 0.05 # 50ms intervals
     NB_QUEUE_SIZE = 15 # 15 per state table
 
     def __init__(self, mutex):
@@ -179,7 +179,7 @@ class neighbor_state:
         for s in range(len(self.clients)):
             for p in range(len(self.paths[s])):
                 r1,r2 = self.paths[s][p]
-                self.clients[s].request( (self.states[s][p], self.last_idx[s], p), 
+                self.clients[s].request( (self.states[s], self.last_idx[s], p), 
                     "GET /stats/"+r1+"/"+r2+"/"+str(self.last_idx[s][p])+
                     "/0/ HTTP/1.1\r\nHost: localhost\r\n\r\n")
         self.mutex.release()
@@ -209,8 +209,8 @@ class network_state:
 
     # constants
     START_DELAY = 15 # 2.5s delayed start
-    TIME_INTERVAL = 0.4 # 50ms intervals
-    NS_QUEUE_SIZE = 5 # per state table
+    TIME_INTERVAL = 0.05 # 50ms intervals
+    NS_QUEUE_SIZE = 15 # per state table
     REC_OFFSET = 2
     REC_SIZE = 5
     
@@ -531,17 +531,19 @@ class rest_reply(object):
         max_entries = int(max_entries)
 
         # get source and destination ips
+        t = 'Unknown path'
         p = (src_ip, dst_ip)
-        idx = self.ns.paths.index(p)
-        s = self.ns.states[idx]
-        l = len(s)
-        t = 'No data yet'
-        if l != 0:
-            oldest_idx = max(s[0][0], oldest_idx)
-            max_entries = l if max_entries == 0 else max_entries
-            num_entries = s[l-1][0] - oldest_idx + 1
-            num_entries = min(num_entries, max_entries)
-            t = str(s[-num_entries:])
+        if p in self.ns.paths:
+            idx = self.ns.paths.index(p)
+            s = self.ns.states[idx]
+            l = len(s)
+            t = 'No data yet'
+            if l != 0:
+                oldest_idx = max(s[0][0], oldest_idx)
+                max_entries = l if max_entries == 0 else max_entries
+                num_entries = s[l-1][0] - oldest_idx + 1
+                num_entries = min(num_entries, max_entries)
+                t = str(s[-num_entries:])
         self.mutex.release()            
         return t
 
