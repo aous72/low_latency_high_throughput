@@ -50,7 +50,9 @@ struct sdn_switch
                    float capacity, long long physical_delay,
                    FILE *data_file = NULL, int number_active_clients = -1)
   {
-    assert(delta != 0);
+//     assert(delta != 0);
+    if (delta == 0)
+      return;
     float cur_rate = tbytes * 8.0f / delta;
     this->rate += factor * (cur_rate - this->rate);
     this->qbytes += factor * (qbytes - this->qbytes);
@@ -109,18 +111,18 @@ struct client_info {
       float delta;
       // idx as int
       // delta as float in seconds, the time between this and the last reading
-      if (sscanf(buf, "[%d, %f, %d", &idx, &delta, &num_switches) != 3) {
+      if (sscanf(buf, "[%d, %d", &idx, &num_switches) != 2) {
         std::cerr << "error in sdn response format\n";
         printf("%s\n", buf);
       }
       else {
-        //skip two comas
+        //skip one comma
         while (remaining_chars > 0 && *buf != ',')
         { --remaining_chars; ++buf; }
         --remaining_chars; ++buf;
-        while (remaining_chars > 0 && *buf != ',')
-        { --remaining_chars; ++buf; }
-        --remaining_chars; ++buf;
+//         while (remaining_chars > 0 && *buf != ',')
+//         { --remaining_chars; ++buf; }
+//         --remaining_chars; ++buf;
       }
       if (num_switches > max_switches)
         std::cerr << "unsupported number of switches\n";
@@ -135,19 +137,20 @@ struct client_info {
         { --remaining_chars; ++buf; }
         --remaining_chars; ++buf;
         
+        int delta;
         int qbytes, transmitted_bytes;
-        float capacity, physical_delay;
-        if (sscanf(buf, "%d, %d, %f, %f", &qbytes, &transmitted_bytes,
-                   &capacity, &physical_delay) != 4) {
+        int capacity, physical_delay;
+        if (sscanf(buf, "%d, %d, %d, %d, %d", &qbytes, &transmitted_bytes,
+                   &capacity, &physical_delay, &delta) != 5) {
           std::cerr << "error in switch reading format\n";
           printf("%s\n", buf);
         }
         if (forward) {
           if (idx >= fidx) {
             fidx = idx;
-            f_switches[i].add_reading(delta, transmitted_bytes, qbytes,
-                                      capacity * 1000000,
-                                      (std::int64_t)(0.5+physical_delay*1000),
+            f_switches[i].add_reading(delta / 1000.0f, transmitted_bytes, qbytes,
+                                      capacity * 1000.0f,
+                                      (std::int64_t)(physical_delay*1000),
                                       i==0 ? data_file : NULL,
                                       num_active_clients);
 //            printf("fsw %d, q = %f, r = %f, c = %f, d = %lld\n", i,
@@ -159,9 +162,9 @@ struct client_info {
         else {
           if (idx >= bidx) {
             bidx = idx;
-            b_switches[i].add_reading(delta, transmitted_bytes, qbytes,
-                                      capacity * 1000000,
-                                      (std::int64_t)(0.5+physical_delay*1000));
+            b_switches[i].add_reading(delta / 1000.0f, transmitted_bytes, qbytes,
+                                      capacity * 1000.0f,
+                                      (std::int64_t)(physical_delay*1000));
 //            printf("bsw %d, q = %f, r = %f, c = %f, d = %lld\n", i,
 //                   b_switches[i].qbytes, b_switches[i].rate,
 //                   b_switches[i].capacity, b_switches[i].physical_delay);
@@ -169,8 +172,8 @@ struct client_info {
           }
         }
 
-        //skip three commas
-        for (int t = 0; t < 3; ++t) {
+        //skip four commas
+        for (int t = 0; t < 4; ++t) {
           while (remaining_chars > 0 && *buf != ',')
           { --remaining_chars; ++buf; }
           --remaining_chars; ++buf;
@@ -324,8 +327,8 @@ protected:
       for (it = clients.begin(); it != clients.end(); ++it) {
         char t_buf[1024];
         sprintf(t_buf,
-                "GET /stats/%s/%s/%d/0 HTTP/1.1\r\nHost: localhost\r\n\r\n"
-                "GET /stats/%s/%s/%d/0 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                "GET /stats/%s/%s/%d/0/ HTTP/1.1\r\nHost: localhost\r\n\r\n"
+                "GET /stats/%s/%s/%d/0/ HTTP/1.1\r\nHost: localhost\r\n\r\n",
                 local_addr.to_string().c_str(),
                 it->first.to_string().c_str(),
                 it->second->fidx >= 0 ? it->second->fidx : 0,

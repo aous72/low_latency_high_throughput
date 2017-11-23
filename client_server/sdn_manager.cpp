@@ -22,6 +22,7 @@ int sdn_manager::process_replies() {
   int num_replies = 0;
   while (ebuf.get_size()) {
     char *p = ebuf.get_buf();
+//     printf("%s\n", p);
     int pos = 0, body_size = 0;
     //eatup the header
     while (pos + 2 < ebuf.get_size() && (p[0] != '\r' || p[1] != '\n')) {
