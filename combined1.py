@@ -204,6 +204,62 @@ class neighbor_state:
             self.last_idx[idx].append(0)
 
 ########################################################################################
+def reconfig_interfaces(ns_dict):
+
+    for i in ns_dict:
+        intf = i.keys()[0]
+        twice_bw = str(i[intf]['bw']*2)+'kbit'
+        bw = str(i[intf]['bw'])+'kbit'
+        half_bw = str(i[intf]['bw']/2)+'kbit'
+        
+        # delete all configuration
+        subprocess.call('sudo tc qdisc del dev ' + intf + ' root', shell=True)
+        
+        # This means the device is at root and uses 5: as a handle. any non 
+        # classified traffic is assigned to class 5:20
+        subprocess.call('sudo tc qdisc add dev ' + intf + ' root handle 5:'
+                        ' htb default 20', shell=True)
+
+        # create the branch 5:1 to have the maximum rate
+        subprocess.call('sudo tc class add dev ' + intf + ' parent 5: classid 5:1'
+                        ' htb rate ' + bw + ' ceil ' + bw, shell=True)
+        
+        # create two queues, each with its rate
+        subprocess.call('sudo tc class add dev ' + intf + ' parent 5:1 classid 5:10'
+                        ' htb rate ' + half_bw + ' ceil ' + bw, shell=True)
+        subprocess.call('sudo tc class add dev ' + intf + ' parent 5:1 classid 5:20'
+                        ' htb rate ' + half_bw + ' ceil ' + bw, shell=True)
+
+        # add delay so that we can see the number of queued bytes
+        subprocess.call('sudo tc qdisc add dev ' + intf + ' parent 5:10 handle 10:'
+                        ' netem delay 1us limit 1000', shell=True)
+        subprocess.call('sudo tc qdisc add dev ' + intf + ' parent 5:20 handle 20:'
+                        ' netem delay 1us limit 1000', shell=True)
+
+        # define filters here
+        # udp into 5:10, everything else goes into 5:20
+        subprocess.call('sudo tc filter add dev ' + intf + ' protocol ip parent 5:'
+                        ' u32 match ip protocol 17 0xff flowid 5:10', shell=True)
+
+########################################################################################
+def set_interactive_rate(intf, interactive_bw, ceil_bw):
+    #change class rates here, bw and ceil_bw are assumed to be in kbits
+    i_bw = str(interactive_bw) + 'kbit'
+    ni_bw = str(ceil_bw - interactive_bw) + 'kbit'
+    c_bw = str(ceil_bw) + 'kbit'
+    subprocess.call('sudo tc class change dev ' + intf + ' parent 5:1 classid 5:10'
+                    ' htb rate ' + i_bw + ' ceil ' + c_bw, shell=True)
+    subprocess.call('sudo tc class change dev ' + intf + ' parent 5:1 classid 5:20'
+                    ' htb rate ' + ni_bw + ' ceil ' + c_bw, shell=True)
+
+########################################################################################
+def background_set_i_rate(intf, interactive_bw, ceil_bw):
+    #set new bandwidth in the background
+    threading.Thread(target = set_interactive_rate,
+        kwargs = {'intf' : intf, 'interactive_bw' : interactive_bw, 'ceil_bw' : ceil_bw}
+        ).start()
+
+########################################################################################
 class network_state:
     " A class to obtain network state every 50ms "
 
@@ -214,7 +270,7 @@ class network_state:
     REC_OFFSET = 2
     REC_SIZE = 5
     
-    def __init__(self, mutex, this_subnet, dict, nb):
+    def __init__(self, mutex, this_subnet, dict, nb, rc):
         # init network state here
         # mutex is used to lock access to state while it is being used
         # self.ns: this is where network state is stored
@@ -243,11 +299,14 @@ class network_state:
             for j in tc_parse:
                 if j[0] == i.keys()[0]:
                     d = i[j[0]]
-                    intf_info = [int(j[2]), int(d['bw']), int(d.get('delay'))]
+                    intf_info = [int(j[2]), d['bw'] / 2, d.get('delay')]
                     self.intf_dest.append(int(d['subnet'].split('.')[2]))
                     self.intfs.append(j[0])
                     self.intfs_info.append(intf_info)
+                    break  # only one interface is for interactive traffic 
+                           # the other one is for non-interactive traffic
         self.nb = nb
+        self.rc = rc
         self.paths = list()
         self.states = list()
         self.last_entries = list()
@@ -321,11 +380,12 @@ class network_state:
         delta = t - self.last_time
         self.last_time = t
         new_entries = []
+        ni_q = []
         for i in range(len(self.intfs)):
-            t = int(tc_parse[i][2])
+            t = int(tc_parse[2 * i][2])
             transmitted = t - self.intfs_info[i][0]
             self.intfs_info[i][0] = t
-            queued = tc_parse[i][3]
+            queued = tc_parse[2 * i][3]
             if queued.endswith('K'):
                 queued = queued[0:-1] + '000'
             elif queued.endswith('M'):
@@ -333,6 +393,15 @@ class network_state:
             queued = int(queued)
             new_entries.append((queued, transmitted,
                 self.intfs_info[i][1], self.intfs_info[i][2], int(1000*delta)))
+            queued = tc_parse[2 * i + 1][3]
+            if queued.endswith('K'):
+                queued = queued[0:-1] + '000'
+            elif queued.endswith('M'):
+                queued = queued[0:-1] + '000000'
+            ni_q.append(int(queued))
+        
+        # ni_q must be used to set rates
+        self.rc.update_flows(ni_q)
         
         #assemble all states
         hnet = self.this_subnet[0] + '.' + self.this_subnet[1] + '.' \
@@ -487,6 +556,10 @@ class network_state:
                 assert 0
         self.idx += 1
         self.mutex.release()
+    
+    def update_reported_bw(self, intf, short_rate):
+        idx = self.intfs.index(intf)
+        self.intfs_info[idx][1] = int(short_rate)
 
     def add_path(self, path):
         # add path if it is not in the servers list of paths
@@ -498,6 +571,158 @@ class network_state:
 
     def terminate(self):
         self.timer.cancel()
+
+########################################################################################
+class rate_control(object):
+
+    def __init__(self, ns_dict, margin_percent, short_time_const, long_time_const, freq):
+        self.ns = None
+        self.action_ports = list()
+        self.ceil_bw =  list()
+        self.cmn = list() # capacity - margin
+        self.short_rate = list()
+        self.long_rate = list()
+        self.intfs = list()
+        self.alp_short = 1.0 / (short_time_const *  freq)
+        self.alp_long = 1.0 / (long_time_const *  freq)
+        
+        self.tflows = list() # tcp flows for data
+        self.tfs_bytes = list()
+        self.tfs_active = list()
+        self.tfs_exist = list()
+        self.uflows = list() # udp flows for video
+        self.ufs_bytes = list()
+        self.ufs_active = list()
+        self.ufs_exist = list()
+        
+        items = subprocess.check_output('ovs-dpctl show', shell=True).split('\n')
+        for i in ns_dict:
+            t = i.keys()[0]
+            self.intfs.append(t)
+            idx = [j for j,x in enumerate(items) if x.find(t) != -1][0]
+            self.action_ports.append(items[idx].split(' ')[1][:-1])
+            bw = float(i[t]['bw'])
+            self.ceil_bw.append(bw)
+            self.cmn.append(bw * (1 - margin_percent))
+            self.short_rate.append(bw / 2)
+            self.long_rate.append(bw / 2)
+            self.tflows.append(list())
+            self.tfs_bytes.append(list())
+            self.tfs_active.append(list())
+            self.tfs_exist.append(list())
+            self.uflows.append(list())
+            self.ufs_bytes.append(list())
+            self.ufs_active.append(list())
+            self.ufs_exist.append(list())
+
+    def add_networks_state(self, ns):
+        self.ns = ns
+
+    @staticmethod
+    def between(s, d1, d2):
+        t1 = s.find(d1) + 1
+        t2 = s[t1:].find(d2)
+        return s[t1:t1+t2]
+
+    def update_flows(self, q_ni):
+        # Enumerate and update flows
+        
+        #mark all existing flows as non-existing, in order to remove stale ones later on
+        for i in range(len(self.action_ports)):
+            for j in range(len(self.ufs_exist[i])):
+                self.ufs_exist[i][j] = False
+            for j in range(len(self.tfs_exist[i])):
+                self.tfs_exist[i][j] = False
+        
+        items = subprocess.check_output('ovs-dpctl dump-flows', shell=True).split('\n')
+        for pi, port in enumerate(self.action_ports):
+            idcs = [j for j,y in enumerate(items) if y[y.rfind(':')+1:] == port]
+            for idx in idcs:
+                if items[idx].find('tcp') != -1:     # tcp flow
+                    elems = items[idx].split(',')
+                    #identify a flow by its 4-tuple
+                    t = (rate_control.between(elems[5], '=', '/'),
+                         rate_control.between(elems[6], '=', '/'),
+                         elems[11][elems[11].find('=')+1:],
+                         rate_control.between(elems[12], '=', ')'))
+                    bytes = elems[14][elems[14].find(':')+1:]
+                    if t in self.tflows[pi]:
+                        t_idx = self.tflows[pi].index(t)
+                        self.tfs_active[pi][t_idx] = (self.tfs_bytes[pi][t_idx] != bytes)
+                        self.tfs_bytes[pi][t_idx] = bytes
+                        self.tfs_exist[pi][t_idx] = True
+                    else:
+                        self.tflows[pi].append(t)
+                        self.tfs_active[pi].append(True)
+                        self.tfs_bytes[pi].append(bytes)
+                        self.tfs_exist[pi].append(True)
+                elif items[idx].find('udp') != -1:     # udp flow
+                    elems = items[idx].split(',')
+                    #identify a flow by its 4-tuple
+                    t = (rate_control.between(elems[5], '=', '/'),
+                         rate_control.between(elems[6], '=', '/'),
+                         elems[11][elems[11].find('=')+1:],
+                         rate_control.between(elems[12], '=', ')'))
+                    bytes = elems[14][elems[14].find(':')+1:]
+                    if t in self.uflows[pi]:
+                        t_idx = self.uflows[pi].index(t)
+                        self.ufs_active[pi][t_idx] = (self.ufs_bytes[pi][t_idx] != bytes)
+                        self.ufs_bytes[pi][t_idx] = bytes
+                        self.ufs_exist[pi][t_idx] = True
+                    else:
+                        self.uflows[pi].append(t)
+                        self.ufs_bytes[pi].append(bytes)
+                        self.ufs_active[pi].append(True)
+                        self.ufs_exist[pi].append(True)
+            #remove stale flows
+            idcs = [j for j,y in enumerate(self.tfs_exist[pi]) if y == False]
+            if idcs: # some has to be removed
+                idcs = [j for j,y in enumerate(self.tfs_exist[pi]) if y == True]
+                if idcs: # some has to be kept
+                    self.tflows[pi][:] = \
+                        [it for j, it in enumerate(self.tflows[pi]) if j in idcs]
+                    self.tfs_bytes[pi][:] = \
+                        [it for j, it in enumerate(self.tfs_bytes[pi]) if j in idcs]
+                    self.tfs_active[pi][:] = \
+                        [it for j, it in enumerate(self.tfs_active[pi]) if j in idcs]
+                    self.tfs_exist[pi][:] = \
+                        [it for j, it in enumerate(self.tfs_exist[pi]) if j in idcs]
+                else:
+                    self.tflows[pi][:] = list()
+                    self.tfs_bytes[pi][:] = list()
+                    self.tfs_active[pi][:] = list()
+                    self.tfs_exist[pi][:] = list()
+            idcs = [j for j,y in enumerate(self.ufs_exist[pi]) if y == False]
+            if idcs: # some has to be removed
+                idcs = [j for j,y in enumerate(self.ufs_exist[pi]) if y == True]
+                if idcs: # some has to be kept
+                    self.uflows[pi][:] = \
+                        [it for j, it in enumerate(self.uflows[pi]) if j in idcs]
+                    self.ufs_bytes[pi][:] = \
+                        [it for j, it in enumerate(self.ufs_bytes[pi]) if j in idcs]
+                    self.ufs_active[pi][:] = \
+                        [it for j, it in enumerate(self.ufs_active[pi]) if j in idcs]
+                    self.ufs_exist[pi][:] = \
+                        [it for j, it in enumerate(self.ufs_exist[pi]) if j in idcs]
+                else:
+                    self.uflows[pi][:] = list()
+                    self.ufs_bytes[pi][:] = list()
+                    self.ufs_active[pi][:] = list()
+                    self.ufs_exist[pi][:] = list()
+        self.find_rates(q_ni)
+
+    def find_rates(self, q_ni):
+        for pi in range(len(self.action_ports)):
+            i = self.ufs_active[pi].count(True) + 1
+            ni = self.tfs_active[pi].count(True) + 1
+            term = self.long_rate[pi] if q_ni[pi] > 0 else self.cmn[pi]
+            self.short_rate[pi] += self.alp_short * (term - self.short_rate[pi])
+            term = self.ceil_bw[pi] * i / (i + ni)
+            self.long_rate[pi] += self.alp_long * (term - self.long_rate[pi])
+            #update network state
+            self.ns.update_reported_bw(self.intfs[pi], self.short_rate[pi])
+            #change network settings
+#             set_interactive_rate(self.intfs[pi], self.long_rate[pi], self.ceil_bw[pi])
 
 #######################################################################################
 class rest_reply(object):
@@ -585,11 +810,18 @@ def start_service(argv):
 
     # network_state
     s1 = first_two_octets + '.' + str(this_subnet-1) + '.0'
-    s2 = first_two_octets + '.' + str(this_subnet+1) + '.0'    
+    s2 = first_two_octets + '.' + str(this_subnet+1) + '.0'
+    # delay and bandwidth need to match that in one_stage
     ns_dict = [ {'s2-eth1': {'delay':60, 'bw': 5000, 'subnet':s1 } }, 
-                {'s4-eth2' : {'delay':80, 'bw': 5000, 'subnet':s2 } } ]
+                {'s4-eth2' : {'delay':60, 'bw': 5000, 'subnet':s2 } } ]
+    #change interfaces configuration
+    reconfig_interfaces(ns_dict)
+    # configure rate_control
+    rc = rate_control(ns_dict, 0.1, 1, 5, 5)
+    #state network_state
     s = first_two_octets + '.' + str(this_subnet) + '.0'
-    ns = network_state( mutex, s, ns_dict, nb )
+    ns = network_state( mutex, s, ns_dict, nb, rc )
+    rc.add_networks_state(ns)
     for i in range(11,15):
         if i != this_subnet:
             d = first_two_octets + '.' + str(i) + '.0'
