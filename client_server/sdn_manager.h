@@ -54,8 +54,9 @@ struct sdn_switch
     if (delta == 0)
       return;
     float cur_rate = tbytes * 8.0f / delta;
-    this->rate += factor * (cur_rate - this->rate);
-    this->qbytes += factor * (qbytes - this->qbytes);
+    float cur_alpha = min(1,0f, alpha * delta);
+    this->rate += cur_alpha * (cur_rate - this->rate);
+    this->qbytes += cur_alpha * (qbytes - this->qbytes);
     this->capacity = capacity;
     this->physical_delay = physical_delay;
     if (data_file) {
@@ -77,7 +78,7 @@ struct sdn_switch
   float capacity;             //bps
   long long physical_delay;   //usec
   
-  static const float factor;
+  static const float alpha;
 };
 
 /////////////////////////////////////////////////////////////////////////////

@@ -316,6 +316,7 @@ class network_state:
         self.intf_dest = []
         self.intfs = []
         self.intfs_info = []
+        self.files = []
         for i in dict:
             for j in tc_parse:
                 if j[0] == i.keys()[0]:
@@ -324,6 +325,7 @@ class network_state:
                     self.intf_dest.append(int(d['subnet'].split('.')[2]))
                     self.intfs.append(j[0])
                     self.intfs_info.append(intf_info)
+                    self.files.append(open(j[0] + '.txt', 'w'))
                     break  # only one interface is for interactive traffic 
                            # the other one is for non-interactive traffic
         self.nb = nb
@@ -400,7 +402,7 @@ class network_state:
         
             # update the states arising from tc
             t = time.time()
-            delta = t - self.last_time
+            delta = int(1000 * (t - self.last_time))
             self.last_time = t
             new_entries = []
             ni_q = []
@@ -426,7 +428,8 @@ class network_state:
                     queued = queued[0:-1] + '000000'
                 queued = int(queued)
                 new_entries.append((queued, transmitted,
-                    self.intfs_info[i][1], self.intfs_info[i][2], int(1000*delta)))
+                    self.intfs_info[i][1], self.intfs_info[i][2], delta))
+                self.files[i].write(str(delta)+' '+str(queued)+' '+str(transmitted)+'\n')
                 queued = tc_parse[2 * i + 1][3]
                 if queued.endswith('K'):
                     queued = queued[0:-1] + '000'

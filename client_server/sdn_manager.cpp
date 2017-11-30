@@ -15,7 +15,8 @@ high_resolution_timer::duration get_duration(double nanosecs) {
   return high_resolution_timer::duration(static_cast<int_least64_t>(t));
 }
 
-const float sdn_switch::factor = 0.05;
+// This is actually alpha / tau, when tau = 50000
+const float sdn_switch::alpha = 0.05f / 50000.0f;
 
 /////////////////////////////////////////////////////////////////////////////
 int sdn_manager::process_replies() {
