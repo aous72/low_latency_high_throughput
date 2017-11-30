@@ -106,11 +106,11 @@ protected: //static callback members
     }
     
     //prepare timeout
-    timer->expires_from_now(get_duration(250e6));
+    timer->expires_from_now(get_duration(100e6));
     timer->async_wait(boost::bind(&udp_client::handle_timeout, this, _1));
     
-    if (timeout_counter < 41)
-      if (++timeout_counter >= 41) {
+    if (timeout_counter < 101)
+      if (++timeout_counter >= 101) {
         dest_endpoint.port(initial_port);
         send_buf.last_message_number = 0;
         last_message = 0;

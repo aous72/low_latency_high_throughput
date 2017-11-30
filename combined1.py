@@ -11,7 +11,7 @@ import cherrypy
 import logging
 import os
 
-from sys import argv
+from sys import argv, path
 
 ########################################################################################
 GLOBAL_TIME_INTERVAL = 0.1
@@ -429,7 +429,7 @@ class network_state:
                 queued = int(queued)
                 new_entries.append((queued, transmitted,
                     self.intfs_info[i][1], self.intfs_info[i][2], delta))
-                self.files[i].write(str(delta)+' '+str(queued)+' '+str(transmitted)+'\n')
+                self.files[i].write(str(self.last_time)+' '+str(queued)+' '+str(transmitted)+'\n')
                 queued = tc_parse[2 * i + 1][3]
                 if queued.endswith('K'):
                     queued = queued[0:-1] + '000'
@@ -616,7 +616,7 @@ class network_state:
 class rate_control(object):
 
     def __init__(self, ns_dict, margin_percent, short_time_const, long_time_const, freq,
-                 skip = 4):
+                 skip = 1):
         self.ns = None
         self.action_ports = list()
         self.ceil_bw =  list()
@@ -637,8 +637,10 @@ class rate_control(object):
         self.ufs_bytes = list()
         self.ufs_active = list()
         self.ufs_exist = list()
+        self.files = list()
         
         items = subprocess.check_output('ovs-dpctl show', shell=True).split('\n')
+        idxx = 0
         for i in ns_dict:
             t = i.keys()[0]
             self.intfs.append(t)
@@ -648,7 +650,8 @@ class rate_control(object):
             self.ceil_bw.append(bw)
             self.cmn.append(bw * (1 - margin_percent))
             self.short_rate.append(bw / 2)
-            self.long_rate.append(bw / 2)
+            self.long_rate.append(list())
+            self.long_rate[idxx].extend([bw/2, bw/2, bw/2, bw/2])
             self.tflows.append(list())
             self.tfs_bytes.append(list())
             self.tfs_active.append(list())
@@ -657,6 +660,8 @@ class rate_control(object):
             self.ufs_bytes.append(list())
             self.ufs_active.append(list())
             self.ufs_exist.append(list())
+            self.files.append(open(t + '_rate.txt', 'w'))
+            idxx += 1
 
     def add_networks_state(self, ns):
         self.ns = ns
@@ -762,14 +767,18 @@ class rate_control(object):
         for pi in range(len(self.action_ports)):
             i = self.ufs_active[pi].count(True) + 1
             ni = self.tfs_active[pi].count(True) + 1
-            term = self.long_rate[pi] if q_ni[pi] > 0 else self.cmn[pi]
+            term = self.long_rate[pi][0] if q_ni[pi] > 0 else self.cmn[pi]
             self.short_rate[pi] += self.alp_short * (term - self.short_rate[pi])
             term = self.ceil_bw[pi] * i / (i + ni)
-            self.long_rate[pi] += self.alp_long * (term - self.long_rate[pi])
+            self.long_rate[pi][0] += self.alp_long * (term - self.long_rate[pi][0])
             #update network state
             self.ns.update_reported_bw(self.intfs[pi], self.short_rate[pi])
             #change network settings
-            set_interactive_rate(self.intfs[pi], self.long_rate[pi], self.ceil_bw[pi])
+            set_interactive_rate(self.intfs[pi], self.long_rate[pi][0], self.ceil_bw[pi])
+            self.files[pi].write(str(time.time())+' '+str(self.long_rate[pi][0])+' '+str(self.short_rate[pi])+'\n')
+#            self.long_rate[pi][3] = self.long_rate[pi][2]
+#            self.long_rate[pi][2] = self.long_rate[pi][1]
+#            self.long_rate[pi][1] = self.long_rate[pi][0]
 
 #######################################################################################
 class rest_reply(object):

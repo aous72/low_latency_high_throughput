@@ -215,7 +215,7 @@ public:
       delay += info.b_switches[i].physical_delay;
     }
     
-    rate = tgt_rate * 1.25f;
+    rate = tgt_rate * 1.05f;
 
     rtt_delay = static_cast<long long>(delay);
     tx_window = static_cast<int>(tgt_rate * delay / 8e6);

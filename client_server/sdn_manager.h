@@ -14,6 +14,7 @@
 
 #include <map>
 #include <list>
+#include <algorithm>
 
 #include <boost/bind.hpp>
 
@@ -51,15 +52,18 @@ struct sdn_switch
                    FILE *data_file = NULL, int number_active_clients = -1)
   {
 //     assert(delta != 0);
-    if (delta == 0)
+    if (delta == 0) {
+      this->qbytes -= alpha * this->qbytes;
       return;
+    }
     float cur_rate = tbytes * 8.0f / delta;
-    float cur_alpha = min(1,0f, alpha * delta);
-    this->rate += cur_alpha * (cur_rate - this->rate);
-    this->qbytes += cur_alpha * (qbytes - this->qbytes);
+//    float cur_alpha = std::min(1.0f, alpha * delta);
+    this->rate += alpha * (cur_rate - this->rate);
+    this->qbytes += alpha * (qbytes - this->qbytes);
     this->capacity = capacity;
     this->physical_delay = physical_delay;
     if (data_file) {
+      fprintf(data_file, "%f ", delta);
       fprintf(data_file, "%f %f", cur_rate, this->rate);
       fprintf(data_file, " %d %f", qbytes, this->qbytes);
       if (number_active_clients >= 0)
@@ -147,8 +151,8 @@ struct client_info {
           printf("%s\n", buf);
         }
         if (forward) {
-          if (idx >= fidx) {
-            fidx = idx;
+          if (idx > fidx) {
+//            fidx = idx;
             f_switches[i].add_reading(delta / 1000.0f, transmitted_bytes, qbytes,
                                       capacity * 1000.0f,
                                       (std::int64_t)(physical_delay*1000),
@@ -161,8 +165,8 @@ struct client_info {
           }
         }
         else {
-          if (idx >= bidx) {
-            bidx = idx;
+          if (idx > bidx) {
+//            bidx = idx;
             b_switches[i].add_reading(delta / 1000.0f, transmitted_bytes, qbytes,
                                       capacity * 1000.0f,
                                       (std::int64_t)(physical_delay*1000));
@@ -182,7 +186,11 @@ struct client_info {
 //        buf[remaining_chars] = 0;
 //        printf("%s\n", buf);
       }
-      
+
+      if (forward)
+        fidx = idx;
+      else
+        bidx = idx; 
       // find the closing bracket
       while (remaining_chars > 0 && *buf != ']')
       { --remaining_chars; ++buf; }

@@ -109,7 +109,8 @@ class one_stage( Topo ):
 
         # links between switches
         self.addLink( s7, s8, txo=False, rxo=False )
-        self.addLink( s8, s9, delay=params[ 'ext_delay' ], txo=False, rxo=False )
+        self.addLink( s8, s9, delay=1, txo=False, rxo=False )
+#         self.addLink( s8, s9, delay=params[ 'ext_delay' ], txo=False, rxo=False )
         
         # cross link between control and data
         r3 = self.addHost( 'r3', cls=linux_router )
@@ -158,7 +159,7 @@ def create_network(argv):
     this_subnet = int(base_ip[base_ip.rfind('.')+1:]) # third octet as int
     
     # mininet
-    topo = one_stage( ip = base_ip, low_bw=5, ext_delay=60000 )
+    topo = one_stage( ip = base_ip, low_bw=5, ext_delay=50000 )
     net = Mininet( topo, link=TCLink, 
                    controller=Controller('c0', ip='127.0.0.2', port=6653) )
     
