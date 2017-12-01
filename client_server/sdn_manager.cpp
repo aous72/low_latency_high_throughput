@@ -9,6 +9,8 @@
 #include "sdn_manager.h"
 #include "server.h"
 
+int num_files = 0;
+
 /////////////////////////////////////////////////////////////////////////////
 high_resolution_timer::duration get_duration(double nanosecs) {
   double t = round(nanosecs);

@@ -35,6 +35,8 @@ class udp_server;
 
 const int max_switches = 5;
 
+extern int num_files;
+
 /////////////////////////////////////////////////////////////////////////////
 high_resolution_timer::duration get_duration(double nanosecs);
 
@@ -94,7 +96,9 @@ struct client_info {
   client_info()
   : count(1), fidx(-1), bidx(-1), num_switches(-1), data_file(NULL)
   {
-    data_file = fopen("server_data_file.txt", "wt");
+    char buf[1024];
+    sprintf(buf, "server_data_file_%d.txt", num_files++);
+    data_file = fopen(buf, "wt");
   }
   
   ~client_info() {
