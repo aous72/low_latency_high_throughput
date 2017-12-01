@@ -430,6 +430,7 @@ class network_state:
                 new_entries.append((queued, transmitted,
                     self.intfs_info[i][1], self.intfs_info[i][2], delta))
                 self.files[i].write(str(self.last_time)+' '+str(queued)+' '+str(transmitted)+'\n')
+                self.files[i].flush()
                 queued = tc_parse[2 * i + 1][3]
                 if queued.endswith('K'):
                     queued = queued[0:-1] + '000'
@@ -616,7 +617,7 @@ class network_state:
 class rate_control(object):
 
     def __init__(self, ns_dict, margin_percent, short_time_const, long_time_const, freq,
-                 skip = 1):
+                 skip):
         self.ns = None
         self.action_ports = list()
         self.ceil_bw =  list()
@@ -624,8 +625,8 @@ class rate_control(object):
         self.short_rate = list()
         self.long_rate = list()
         self.intfs = list()
-        self.alp_short = 1.0 / (short_time_const *  freq / skip)
-        self.alp_long = 1.0 / (long_time_const *  freq / skip)
+        self.alp_short = min(1.0, 1.0 / (short_time_const *  freq / skip))
+        self.alp_long = min(1.0, 1.0 / (long_time_const *  freq / skip))
         self.skip = skip
         self.skip_cnt = 0
         
@@ -871,7 +872,7 @@ def start_service(argv):
     #change interfaces configuration
     reconfig_interfaces(ns_dict)
     # configure rate_control
-    rc = rate_control(ns_dict, 0.1, 1, 5, 1.0 / GLOBAL_TIME_INTERVAL)
+    rc = rate_control(ns_dict, 0.0, 0.3, 2, 1.0 / GLOBAL_TIME_INTERVAL, 1)
     #state network_state
     s = first_two_octets + '.' + str(this_subnet) + '.0'
     ns = network_state( mutex, s, ns_dict, nb, rc )

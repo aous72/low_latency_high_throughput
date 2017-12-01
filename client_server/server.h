@@ -13,6 +13,7 @@
 #include <iostream>
 
 #include <map>
+#include <chrono>
 
 #include <boost/bind.hpp>
 
@@ -220,11 +221,15 @@ public:
     rtt_delay = static_cast<long long>(delay);
     tx_window = static_cast<int>(tgt_rate * delay / 8e6);
     if (tx_window < smallest_window) tx_window = smallest_window;
-//    printf("Client = %p, "
+    double fractional_seconds_since_epoch
+      = std::chrono::duration_cast<std::chrono::duration<double>>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+//    printf("Client = %p, %f, "
 //           "observed_rate = %f, rate = %f, rtt_delay = %lld, tx_window = %d, "
 //           "rate = %f\n",
-//           this,
-//           observed_rate, rate, rtt_delay, tx_window, info.f_switches[0].rate);
+//            this,
+//            fractional_seconds_since_epoch,
+//            observed_rate, rate, rtt_delay, tx_window, info.f_switches[0].rate);
   }
   
   const udp::endpoint& endpoint() { return cli_ep; }

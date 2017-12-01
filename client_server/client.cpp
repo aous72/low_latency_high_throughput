@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <cmath>
+#include <chrono>
 
 #include <boost/bind.hpp>
 
@@ -101,7 +102,10 @@ protected: //static callback members
     last_message = send_buf.last_message_number;
     std::cout << "num messages = " << num_msgs << std::endl;
     if (data_file) {
-      fprintf(data_file, "%d\n",num_msgs);
+      double fractional_seconds_since_epoch
+      = std::chrono::duration_cast<std::chrono::duration<double>>(
+        std::chrono::system_clock::now().time_since_epoch()).count();    
+      fprintf(data_file, "%f, %d\n",fractional_seconds_since_epoch,num_msgs);
       fflush(data_file);
     }
     

@@ -15,6 +15,7 @@
 #include <map>
 #include <list>
 #include <algorithm>
+#include <chrono>
 
 #include <boost/bind.hpp>
 
@@ -49,7 +50,7 @@ struct sdn_switch
   
   void add_reading(float delta, int tbytes, int qbytes,
                    float capacity, long long physical_delay,
-                   FILE *data_file = NULL, int number_active_clients = -1)
+                   FILE *data_file, int number_active_clients)
   {
 //     assert(delta != 0);
     if (delta == 0) {
@@ -63,12 +64,15 @@ struct sdn_switch
     this->capacity = capacity;
     this->physical_delay = physical_delay;
     if (data_file) {
+      double fractional_seconds_since_epoch
+      = std::chrono::duration_cast<std::chrono::duration<double>>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+      fprintf(data_file, "%f ", fractional_seconds_since_epoch);
       fprintf(data_file, "%f ", delta);
       fprintf(data_file, "%f %f", cur_rate, this->rate);
       fprintf(data_file, " %d %f", qbytes, this->qbytes);
       if (number_active_clients >= 0)
         fprintf(data_file, " %d", number_active_clients);
-      fprintf(data_file, "\n");
       fflush(data_file);
     }
 
@@ -156,8 +160,7 @@ struct client_info {
             f_switches[i].add_reading(delta / 1000.0f, transmitted_bytes, qbytes,
                                       capacity * 1000.0f,
                                       (std::int64_t)(physical_delay*1000),
-                                      i==0 ? data_file : NULL,
-                                      num_active_clients);
+                                      data_file, num_active_clients);
 //            printf("fsw %d, q = %f, r = %f, c = %f, d = %lld\n", i,
 //                   f_switches[i].qbytes, f_switches[i].rate,
 //                   f_switches[i].capacity, f_switches[i].physical_delay);
@@ -169,7 +172,8 @@ struct client_info {
 //            bidx = idx;
             b_switches[i].add_reading(delta / 1000.0f, transmitted_bytes, qbytes,
                                       capacity * 1000.0f,
-                                      (std::int64_t)(physical_delay*1000));
+                                      (std::int64_t)(physical_delay*1000),
+                                      NULL, num_active_clients);
 //            printf("bsw %d, q = %f, r = %f, c = %f, d = %lld\n", i,
 //                   b_switches[i].qbytes, b_switches[i].rate,
 //                   b_switches[i].capacity, b_switches[i].physical_delay);
@@ -187,8 +191,10 @@ struct client_info {
 //        printf("%s\n", buf);
       }
 
-      if (forward)
+      if (forward) {
         fidx = idx;
+        fprintf(data_file, "\n");
+      }
       else
         bidx = idx; 
       // find the closing bracket
