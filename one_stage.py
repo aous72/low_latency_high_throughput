@@ -109,8 +109,8 @@ class one_stage( Topo ):
 
         # links between switches
         self.addLink( s7, s8, txo=False, rxo=False )
-        self.addLink( s8, s9, delay=1, txo=False, rxo=False )
-#        self.addLink( s8, s9, delay=params[ 'ext_delay' ], txo=False, rxo=False )
+#        self.addLink( s8, s9, delay=1, txo=False, rxo=False )
+        self.addLink( s8, s9, delay=params[ 'ext_delay' ], txo=False, rxo=False )
          
         # cross link between control and data
         r3 = self.addHost( 'r3', cls=linux_router )
