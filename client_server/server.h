@@ -255,6 +255,7 @@ protected:
       socket.async_send_to(boost::asio::buffer(send_buf, packet_size),
                            cli_ep, boost::bind(&udp_svr_client::handle_send,
                                                this, _1, _2));
+//      acknowledgements.push_back(acknowledgment_info(packet_size, cur_time));
       time_gate += one_packet_duration;
       count++;
     }

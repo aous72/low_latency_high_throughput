@@ -872,7 +872,7 @@ def start_service(argv):
     #change interfaces configuration
     reconfig_interfaces(ns_dict)
     # configure rate_control
-    rc = rate_control(ns_dict, 0.0, 0.3, 2, 1.0 / GLOBAL_TIME_INTERVAL, 1)
+    rc = rate_control(ns_dict, 0.1, 0.3, 2, 1.0 / GLOBAL_TIME_INTERVAL, 1)
     #state network_state
     s = first_two_octets + '.' + str(this_subnet) + '.0'
     ns = network_state( mutex, s, ns_dict, nb, rc )
