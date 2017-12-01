@@ -70,9 +70,9 @@ struct sdn_switch
       fprintf(data_file, "%f ", fractional_seconds_since_epoch);
       fprintf(data_file, "%f ", delta);
       fprintf(data_file, "%f %f", cur_rate, this->rate);
-      fprintf(data_file, " %d %f", qbytes, this->qbytes);
+      fprintf(data_file, " %d %f ", qbytes, this->qbytes);
       if (number_active_clients >= 0)
-        fprintf(data_file, " %d", number_active_clients);
+        fprintf(data_file, "%d ", number_active_clients);
       fflush(data_file);
     }
 
@@ -192,8 +192,9 @@ struct client_info {
       }
 
       if (forward) {
+        if (fidx != idx)
+          fprintf(data_file, "\n");
         fidx = idx;
-        fprintf(data_file, "\n");
       }
       else
         bidx = idx; 
