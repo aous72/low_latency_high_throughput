@@ -867,8 +867,8 @@ def start_service(argv):
     s1 = first_two_octets + '.' + str(this_subnet-1) + '.0'
     s2 = first_two_octets + '.' + str(this_subnet+1) + '.0'
     # delay and bandwidth need to match that in one_stage
-    ns_dict = [ {'s2-eth1': {'delay':60, 'bw': 5000, 'subnet':s1 } }, 
-                {'s4-eth2' : {'delay':60, 'bw': 5000, 'subnet':s2 } } ]
+    ns_dict = [ {'s2-eth1': {'delay':50, 'bw': 5000, 'subnet':s1 } }, 
+                {'s4-eth2' : {'delay':50, 'bw': 5000, 'subnet':s2 } } ]
     #change interfaces configuration
     reconfig_interfaces(ns_dict)
     # configure rate_control
