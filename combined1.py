@@ -10,6 +10,7 @@ import math
 import cherrypy
 import logging
 import os
+import math
 
 from sys import argv, path
 
@@ -55,7 +56,6 @@ class buffer_processor:
 class client(asyncore.dispatcher):
 
     def __init__(self, server, mutex):
-        asyncore.dispatcher.__init__(self)
         self.rx_buf = buffer_processor()
         self.mutex = mutex
         self.reset()
@@ -72,12 +72,14 @@ class client(asyncore.dispatcher):
         del lst[:-neighbor_state.NB_QUEUE_SIZE]
         
     def handle_connect(self):
+        print 'connected'
         self.closed = False
 
     def handle_close(self):
+        print 'closed'
         self.close()
         self.reset()
-        self.start_connection()
+#        self.start_connection()
 
     def handle_read(self):
         t = self.recv(8192)
@@ -129,6 +131,10 @@ class client(asyncore.dispatcher):
         sent = self.send(self.tx_buf)
         self.tx_buf = self.tx_buf[sent:]
 
+    def handle_error(self):
+        print "problem reaching server."
+        self.start_connection()
+
     def reset(self):
 #         self.mutex.acquire()
         self.tx_buf = ''
@@ -140,6 +146,8 @@ class client(asyncore.dispatcher):
 #         self.mutex.release()
 
     def start_connection(self):
+        print 'connecting to ' + self.server[0] + ':' + str(self.server[1])
+        asyncore.dispatcher.__init__(self)
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connect( self.server )
 
@@ -153,7 +161,7 @@ class neighbor_state:
     " A class to obtain network state every 50ms "
 
     # constants
-    START_DELAY = 10 # 5s delayed start
+    START_DELAY = 15 # 5s delayed start
     TIME_INTERVAL = GLOBAL_TIME_INTERVAL 
     NB_QUEUE_SIZE = 15 # 15 per state table
 
@@ -237,13 +245,14 @@ def reconfig_interfaces(ns_dict):
         subprocess.call('sudo tc class add dev ' + intf + ' parent 5:1 classid 5:10'
                         ' htb rate ' + half_bw + ' ceil ' + bw, shell=True)
         subprocess.call('sudo tc class add dev ' + intf + ' parent 5:1 classid 5:20'
-                        ' htb rate ' + half_bw + ' ceil ' + bw, shell=True)
+                        ' htb rate ' + half_bw + ' ceil ' + bw + ' prio 1', 
+                        shell=True)
 
         # add delay so that we can see the number of queued bytes
         subprocess.call('sudo tc qdisc add dev ' + intf + ' parent 5:10 handle 10:'
-                        ' netem delay 1us limit 1000', shell=True)
+                        ' netem delay 1us limit 250', shell=True)
         subprocess.call('sudo tc qdisc add dev ' + intf + ' parent 5:20 handle 20:'
-                        ' netem delay 1us limit 1000', shell=True)
+                        ' netem delay 1us limit 250', shell=True)
 
         # define filters here
         # udp into 5:10, everything else goes into 5:20
@@ -285,7 +294,7 @@ class network_state:
     " A class to obtain network state every 50ms "
 
     # constants
-    START_DELAY = 15 # 2.5s delayed start
+    START_DELAY = 30 # 2.5s delayed start
     TIME_INTERVAL = GLOBAL_TIME_INTERVAL
     NS_QUEUE_SIZE = 15 # per state table
     REC_OFFSET = 2
@@ -321,7 +330,7 @@ class network_state:
             for j in tc_parse:
                 if j[0] == i.keys()[0]:
                     d = i[j[0]]
-                    intf_info = [int(j[2]), d['bw'] / 2, d.get('delay')]
+                    intf_info = [int(j[2]), 0, d['bw'] / 2, d.get('delay')]
                     self.intf_dest.append(int(d['subnet'].split('.')[2]))
                     self.intfs.append(j[0])
                     self.intfs_info.append(intf_info)
@@ -352,7 +361,7 @@ class network_state:
                     entry[idx1+1] += int(t[idx1+1])
                     entry[idx1+2]  = int(t[idx1+2])
                     entry[idx1+3]  = int(t[idx1+3])
-                    entry[idx1+4] += int(t[idx1+4])
+                    entry[idx1+4] = int(entry[idx1+4])+float(t[idx1+4])
         elif u_num != 0 and bool(last_entry):
             for i in range(0, u_num):
                 idx = network_state.REC_OFFSET + i * network_state.REC_SIZE
@@ -368,11 +377,13 @@ class network_state:
                 nr = (len(t) - network_state.REC_OFFSET) / network_state.REC_SIZE
                 for i in range(0, nr):
                     idx1 = network_state.REC_OFFSET + i * network_state.REC_SIZE
+#                     print t, entry, off, idx1
+#                     print u_num, u, v_num, v, self_idx, last_entry
                     entry[off + idx1]      = int(t[idx1])
                     entry[off + idx1 + 1] += int(t[idx1 + 1])
                     entry[off + idx1 + 2]  = int(t[idx1 + 2])
                     entry[off + idx1 + 3]  = int(t[idx1 + 3])
-                    entry[off + idx1 + 4] += int(t[idx1 + 4])
+                    entry[off + idx1 + 4] = int(entry[off+idx1+4])+float(t[idx1+4])
         elif v_num != 0 and bool(last_entry):
             off = u_num * network_state.REC_SIZE
             for i in range(0, v_num):
@@ -402,7 +413,10 @@ class network_state:
         
             # update the states arising from tc
             t = time.time()
-            delta = int(1000 * (t - self.last_time))
+            delta = float(int(1000 * (t - self.last_time)))
+            tt = t / 100 - math.floor(t / 100)
+            tt = math.floor(tt * 100000) / 100000
+            delta = delta + tt
             self.last_time = t
             new_entries = []
             ni_q = []
@@ -428,15 +442,19 @@ class network_state:
                     queued = queued[0:-1] + '000000'
                 queued = int(queued)
                 new_entries.append((queued, transmitted,
-                    self.intfs_info[i][1], self.intfs_info[i][2], delta))
-                self.files[i].write(str(self.last_time)+' '+str(queued)+' '+str(transmitted)+'\n')
-                self.files[i].flush()
+                    self.intfs_info[i][2], self.intfs_info[i][3], delta))
+                self.files[i].write(str(self.last_time)+' '+str(queued)+' '+str(transmitted)+' ')
                 queued = tc_parse[2 * i + 1][3]
                 if queued.endswith('K'):
                     queued = queued[0:-1] + '000'
                 elif queued.endswith('M'):
                     queued = queued[0:-1] + '000000'
                 ni_q.append(int(queued))
+                t = int(tc_parse[2 * i + 1][2])
+                transmitted = t - self.intfs_info[i][1]
+                self.intfs_info[i][1] = t
+                self.files[i].write(str(queued)+' '+str(transmitted)+'\n')
+                self.files[i].flush()
         
             # ni_q must be used to set rates
             self.rc.update_flows(ni_q)
@@ -600,7 +618,7 @@ class network_state:
     
     def update_reported_bw(self, intf, short_rate):
         idx = self.intfs.index(intf)
-        self.intfs_info[idx][1] = int(short_rate)
+        self.intfs_info[idx][2] = int(short_rate)
 
     def add_path(self, path):
         # add path if it is not in the servers list of paths
@@ -616,10 +634,22 @@ class network_state:
 ########################################################################################
 class rate_control(object):
 
+    ZERO_Q_CNT = 3  #the queued bytes has to be zero for ZERO_Q_CNT before
+                    # the queue is considered idle
+    ZERO_D_CNT = 20 #the transmitted bytes has to be zero for ZERO_D_CNT 
+                    # before the flow is considered idle
+                    # 20 is chosen because it is equivalent to 2 seconds.
+                    # With a buffer that can hold 250 packets
+                    # a rate of 5/3 Mbps, and a packet of 1514 bytes,
+                    # we less than 2 seconds worth of buffer.
+                    # we have to do this because we cannot check if a flow
+                    # has queued packets.
+
     def __init__(self, ns_dict, margin_percent, short_time_const, long_time_const, freq,
                  skip):
         self.ns = None
         self.action_ports = list()
+        self.qni_cnt = list()
         self.ceil_bw =  list()
         self.cmn = list() # capacity - margin
         self.short_rate = list()
@@ -647,6 +677,7 @@ class rate_control(object):
             self.intfs.append(t)
             idx = [j for j,x in enumerate(items) if x.find(t) != -1][0]
             self.action_ports.append(items[idx].split(' ')[1][:-1])
+            self.qni_cnt.append(self.ZERO_Q_CNT);
             bw = float(i[t]['bw'])
             self.ceil_bw.append(bw)
             self.cmn.append(bw * (1 - margin_percent))
@@ -676,6 +707,12 @@ class rate_control(object):
     def update_flows(self, q_ni):
         # Enumerate and update flows
         
+        # reduce the frequency of running this code
+        self.skip_cnt += 1
+        if self.skip_cnt < self.skip:
+            return
+        self.skip_cnt = 0
+        
         #mark all existing flows as non-existing, in order to remove stale ones later on
         for i in range(len(self.action_ports)):
             for j in range(len(self.ufs_exist[i])):
@@ -697,12 +734,12 @@ class rate_control(object):
                     bytes = elems[14][elems[14].find(':')+1:]
                     if t in self.tflows[pi]:
                         t_idx = self.tflows[pi].index(t)
-                        self.tfs_active[pi][t_idx] = (self.tfs_bytes[pi][t_idx] != bytes)
+                        self.tfs_active[pi][t_idx] = 0 if (self.tfs_bytes[pi][t_idx] != bytes) else self.tfs_active[pi][t_idx] + 1
                         self.tfs_bytes[pi][t_idx] = bytes
                         self.tfs_exist[pi][t_idx] = True
                     else:
                         self.tflows[pi].append(t)
-                        self.tfs_active[pi].append(True)
+                        self.tfs_active[pi].append(0)
                         self.tfs_bytes[pi].append(bytes)
                         self.tfs_exist[pi].append(True)
                 elif items[idx].find('udp') != -1:     # udp flow
@@ -715,13 +752,13 @@ class rate_control(object):
                     bytes = elems[14][elems[14].find(':')+1:]
                     if t in self.uflows[pi]:
                         t_idx = self.uflows[pi].index(t)
-                        self.ufs_active[pi][t_idx] = (self.ufs_bytes[pi][t_idx] != bytes)
+                        self.ufs_active[pi][t_idx] = 0 if (self.ufs_bytes[pi][t_idx] != bytes) else self.ufs_active[pi][t_idx] + 1
                         self.ufs_bytes[pi][t_idx] = bytes
                         self.ufs_exist[pi][t_idx] = True
                     else:
                         self.uflows[pi].append(t)
+                        self.ufs_active[pi].append(0)
                         self.ufs_bytes[pi].append(bytes)
-                        self.ufs_active[pi].append(True)
                         self.ufs_exist[pi].append(True)
             #remove stale flows
             idcs = [j for j,y in enumerate(self.tfs_exist[pi]) if y == False]
@@ -761,22 +798,19 @@ class rate_control(object):
         self.find_rates(q_ni)
 
     def find_rates(self, q_ni):
-        self.skip_cnt += 1
-        if self.skip_cnt < self.skip:
-            return
-        self.skip_cnt = 0
         for pi in range(len(self.action_ports)):
-            i = self.ufs_active[pi].count(True) + 1
-            ni = self.tfs_active[pi].count(True) + 1
-            term = self.long_rate[pi][0] if q_ni[pi] > 0 else self.cmn[pi]
-            self.short_rate[pi] += self.alp_short * (term - self.short_rate[pi])
-            term = self.ceil_bw[pi] * i / (i + ni)
-            self.long_rate[pi][0] += self.alp_long * (term - self.long_rate[pi][0])
+            i = len([x for x in self.ufs_active[pi] if x < self.ZERO_D_CNT]) + 1
+            ni = len([x for x in self.tfs_active[pi] if x < self.ZERO_D_CNT]) + 1
+            self.qni_cnt[pi] = self.qni_cnt[pi]+1 if q_ni[pi] == 0 else 0
+            term1 = self.long_rate[pi][0] if self.qni_cnt[pi] < self.ZERO_Q_CNT else self.cmn[pi]
+            self.short_rate[pi] += self.alp_short * (term1 - self.short_rate[pi])
+            term2 = self.ceil_bw[pi] * i / (i + ni)
+            self.long_rate[pi][0] += self.alp_long * (term2 - self.long_rate[pi][0])
             #update network state
             self.ns.update_reported_bw(self.intfs[pi], self.short_rate[pi])
             #change network settings
             set_interactive_rate(self.intfs[pi], self.long_rate[pi][0], self.ceil_bw[pi])
-            self.files[pi].write(str(time.time())+' '+str(self.long_rate[pi][0])+' '+str(self.short_rate[pi])+'\n')
+            self.files[pi].write(str(time.time())+' '+str(i)+' '+str(ni)+' '+str(term2)+' '+str(self.long_rate[pi][0])+' '+str(term1)+' '+str(self.short_rate[pi])+'\n')
 #            self.long_rate[pi][3] = self.long_rate[pi][2]
 #            self.long_rate[pi][2] = self.long_rate[pi][1]
 #            self.long_rate[pi][1] = self.long_rate[pi][0]
@@ -892,8 +926,8 @@ def start_service(argv):
     cherrypy.config.update({ 'global': {
             'environment': 'production',
             'log.screen': False,
-            'log.access_file': os.path.join(os.getcwd(), 'access.log'),
-            'log.error_file': os.path.join(os.getcwd(), 'error.log'),
+#            'log.access_file': os.path.join(os.getcwd(), 'access.log'),
+#            'log.error_file': os.path.join(os.getcwd(), 'error.log'),
             'engine.autoreload.on': False,
             'server.socket_host': http_ip,
             'server.socket_port': 8080,

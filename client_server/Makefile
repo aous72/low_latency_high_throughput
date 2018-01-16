@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-O2 -std=gnu++11 -I.
+CFLAGS=-g -O2 -std=gnu++11 -I.
 SVR_DEPS = server.h sdn_manager.h  
 SVR_OBJ = server.o sdn_manager.o  
 CLNT_OBJ = client.o  

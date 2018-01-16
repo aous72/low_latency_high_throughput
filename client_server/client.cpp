@@ -32,10 +32,11 @@ high_resolution_timer::duration get_duration(double nanosecs) {
 
 /////////////////////////////////////////////////////////////////////////////
 struct send_data {
-  send_data() : last_message_number(0), time_tick(false) {}
+  send_data() : last_message_number(0), time_tick(false), time_stamp(0) {}
   operator const char *() const { return (char *)this; }
   int last_message_number;
   bool time_tick;
+  long long time_stamp;
 };
 
 /////////////////////////////////////////////////////////////////////////////
@@ -43,7 +44,8 @@ class udp_client {
 public:
   udp_client()
   : srvc(NULL), socket(NULL), timer(NULL), rslvr(NULL), initial_port(0),
-  ms_timeout(0), timeout_counter(0), last_message(0), id(-1), data_file(NULL)
+  ms_timeout(0), timeout_counter(0), last_message(0), id(-1), data_file(NULL),
+  timeout_dur(get_duration(100e6))
   {
     memset(recv_buf, 0, sizeof(recv_buf));
   }
@@ -84,8 +86,10 @@ protected: //static callback members
   void handle_receive(const error_code& ec, std::size_t length) {
     if (!ec) {
       int msg_number = *(int *)recv_buf;
-      if (msg_number > send_buf.last_message_number)
+      if (msg_number > send_buf.last_message_number) {
         send_buf.last_message_number = msg_number;
+        send_buf.time_stamp = *(long long *)(((int *) recv_buf) + 4);
+      }
     }
     timeout_counter = 0;
     socket->async_receive_from(boost::asio::buffer(recv_buf), dest_endpoint, 0,
@@ -95,22 +99,29 @@ protected: //static callback members
   }
   
   void handle_timeout(const error_code& error) {
+    static float rate = 0.0f;
+    const float tau = 1.0f;
+    static const float dt = timeout_dur.count() / 1e9f;
+    static const float alpha = tau * dt;
+    
     if (error == boost::asio::error::operation_aborted)
       return;
 
     int num_msgs = send_buf.last_message_number - last_message;
     last_message = send_buf.last_message_number;
-    std::cout << "num messages = " << num_msgs << std::endl;
+    rate += alpha * (num_msgs * 1514.0f * 8.0f / dt - rate);
+    printf("%d %f\n", num_msgs, rate);
     if (data_file) {
       double fractional_seconds_since_epoch
       = std::chrono::duration_cast<std::chrono::duration<double>>(
         std::chrono::system_clock::now().time_since_epoch()).count();    
-      fprintf(data_file, "%f, %d\n",fractional_seconds_since_epoch,num_msgs);
+      fprintf(data_file, "%f, %d, %f\n", fractional_seconds_since_epoch,
+              num_msgs, rate);
       fflush(data_file);
     }
     
     //prepare timeout
-    timer->expires_from_now(get_duration(100e6));
+    timer->expires_from_now(timeout_dur);
     timer->async_wait(boost::bind(&udp_client::handle_timeout, this, _1));
     
     if (timeout_counter < 101)
@@ -170,6 +181,7 @@ protected: //protected variables
   udp::endpoint dest_endpoint;
   int ms_timeout, initial_port;
   int timeout_counter;
+  high_resolution_timer::duration timeout_dur;
 };
 
 /////////////////////////////////////////////////////////////////////////////

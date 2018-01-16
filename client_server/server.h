@@ -35,12 +35,15 @@ using boost::system::error_code;
 class udp_svr_client;
 class udp_server;
 
+#define METHOD 2
+
 /////////////////////////////////////////////////////////////////////////////
 struct rcv_data {
   rcv_data() : last_message_number(0), time_tick(false) {}
   operator char *() const { return (char *)this; }
   int last_message_number;
   bool time_tick;
+  long long time_stamp;
 };
 
 /////////////////////////////////////////////////////////////////////////////
@@ -66,17 +69,19 @@ public:
                  bool on_off_transitions)
   : socket(service), srvc(service), timer(service), cli_ep(client_endpoint),
   timeout(timeout), last_msg_time(high_resolution_timer::clock_type::now()),
-  marked_for_deletion(false), server(server), acknowledgements(500),
+  marked_for_deletion(false), server(server),
   rate_obs_dur(get_duration(500e6)), last_ack(0), cur_message(0),
   data_exist(true), transition_probability(0.1),
-  transition_threshold(RAND_MAX)
+  transition_threshold(RAND_MAX),
+  last_obs_rate_update_time(high_resolution_timer::clock_type::now()),
+  observed_rate(0.0f), num_rec_bytes(0), running_counter(0)
   {
     memset(send_buf, 0, sizeof(send_buf));
     socket.open(udp::v4());
     send_cnt = recv_cnt = 0;
     packet_size = 1472; //1500 bytes
     smallest_window = packet_size;
-    rate = 8 * 5000; // 5kB/sec
+    tx_rate = 8 * 5000; // 5kB/sec
     max_rate = 100e6; //100Mbps
     rtt_delay = 100000; //100ms
     time_gate = timestamp;
@@ -85,6 +90,9 @@ public:
       transition_threshold *= (1-transition_probability);
     send();
     data_received(timestamp, rcv, length);
+#if METHOD == 1
+    skip_count = 200;
+#endif
   }
   
   ~udp_svr_client() {
@@ -101,10 +109,10 @@ public:
     assert(length >= 5);
     int num_bytes = 0, ack_num = rcv.last_message_number;
     if (ack_num > last_ack) {
-      num_bytes = (ack_num - last_ack) * packet_size;
+      num_bytes = (ack_num - last_ack) * (packet_size + 42);
       last_ack = ack_num;
     }
-    acknowledgements.push_back(acknowledgment_info(num_bytes, timestamp));
+    num_rec_bytes += num_bytes;
     
     if (rcv.time_tick && rand() > transition_threshold) {
       data_exist = !data_exist;
@@ -136,102 +144,398 @@ public:
     marked_for_deletion = true;
   }
   
-  void update_rate(const client_info& info) {
-    const int S = packet_size + 42;
-    //estimate observed rate
-    std::size_t buf_size = acknowledgements.size();
-    if (buf_size == 0)
-      return;
+  //////////////////////////////////////////////////////////////////////////////
+//   void update_rate(const client_info& info, bool forward) {
+//   
+//     if (!forward)
+//       return;
+//     
+//     // The formula is
+//     //            packet_size * capacity
+//     // --------------------------------------------
+//     //                     ( rate - observed_rate )
+//     // packet_size + qbyte (----------------------)
+//     //                     (         rate         )
+//     
+//     const int S = packet_size + 42;
+//     const float tgt_rate_factor = 1.25f;
+//     const float processing_delay = 100e6; //100ms
+//     
+//     high_resolution_timer::time_point cur_time;
+//     cur_time = high_resolution_timer::clock_type::now();
+//     if (forward && (++running_counter & 0x1) == 0)
+//     {
+//       float dt = (cur_time - last_obs_rate_update_time).count() / 1e9f;
+//       float alpha = std::min(1.0f, sdn_switch::tau * dt);
+//       float rate = num_rec_bytes * 8.0f / dt;
+//       observed_rate += alpha * (rate - observed_rate);
+//       num_rec_bytes = 0;
+//       last_obs_rate_update_time = cur_time;
+//     }
+//     
+//     //estimate rate
+//     double tgt_rate = max_rate;
+//     double physical_delay = 0, queuing_delay = 0;
+//     int bottleneck_switch_index = 0;
+//     double bn_bar = 0.0f, bn_hat = 0.0f, bn_lambda_ratio = 1.0f;
+//     for (int i = 0; i < info.num_switches; ++i) {
+//       
+//       //most recent
+//       double y_hat = observed_rate;
+//       double y_bar = info.f_switches[i].rate;
+//       double q_bar_actual = info.f_switches[i].qbytes;
+//       q_bar_actual = (info.f_switches[i].qbytes + std::min(y_bar / (y_hat + 0.000001), 4.0)) / 2;
+//       double q_hat_actual = q_bar_actual;
+//       if (y_bar >= y_hat && y_bar > 0)
+//         q_hat_actual *= y_hat / y_bar;
+//       
+//       //remove prediction
+//       double q_bar_delayed = q_bars[i].get_delayed_val();
+//       double q_hat_delayed = q_hats[i].get_delayed_val();
+//       double q_bar_error = q_bar_actual - q_bar_delayed;
+//       double q_hat_error = q_hat_actual - q_hat_delayed;
+//       
+//       //add recent val
+//       double q_bar = q_bar_error + q_bars[i].get_recent_val();
+//       double q_hat = q_hat_error + q_hats[i].get_recent_val();
+//             
+//       double rate = S * info.f_switches[i].capacity;
+//       rate /= (S + std::max(q_bar - q_hat, 0.0));
+//       
+//       if (rate < tgt_rate) { 
+//         tgt_rate = rate; 
+//         bottleneck_switch_index = i; 
+//         bn_bar = q_bar_actual;
+//         bn_hat = q_hat_actual;
+// //         if (y_bar >= y_hat && y_bar > 0) {
+//           bn_lambda_ratio = q_bar_actual / S;
+// //           if (i == 1) printf("%f\n", bn_lambda_ratio);
+// //         }
+// //         else
+// //           bn_lambda_ratio = 1.0f;
+//       }
+//       
+// //       if (i == 1)
+// //         printf("%5f %5f %5f %5f %5f %5f %f\n", q_bar_delayed, q_hat_delayed,
+// //            q_bar_actual, q_hat_actual, q_bar_error, q_hat_error, rate);
+// //         printf("%5f %5f %5f %5f %5f %5f %f\n", q_bar_actual, q_hat_actual,
+// //            q_bar_error, q_hat_error, q_bar, q_hat, rate);
+//       
+//       //Time for information to show on switch and get feedback
+//       //This should exclude the physical delay of this switch
+//       double switch_delay = physical_delay * 1000 + (i+1) * processing_delay;
+//       q_hats[i].set_delay(switch_delay, cur_time);
+//       q_bars[i].set_delay(switch_delay, cur_time);
+// //       q_hats[i].set_delay(info.f_switches[i].info_delay, cur_time);
+// //       q_bars[i].set_delay(info.f_switches[i].info_delay, cur_time);
+//       
+//       //time delay
+//       double other_qbytes = q_bar_actual - q_hat_actual;
+//       queuing_delay += (S + other_qbytes) * 8e6 / info.f_switches[i].capacity;
+//       queuing_delay += info.b_switches[i].qbytes * 8e6 / info.b_switches[i].capacity;
+//       physical_delay += info.f_switches[i].physical_delay;
+//       physical_delay += info.b_switches[i].physical_delay;
+//     }
+//     
+//     for (int i = 0; i < info.num_switches; ++i) {
+//       high_resolution_timer::time_point last_time;
+//       last_time = q_hats[i].get_recent_time();
+//       float dt = (cur_time - last_time).count() / 1e9f; //in seconds
+//       float alpha = std::min(1.0f, sdn_switch::tau * dt);
+//       float q_bar = q_bars[i].get_recent_val();
+//       float q_hat = q_hats[i].get_recent_val();
+// 
+//       if (bottleneck_switch_index == i) {
+//         q_bar += alpha * (S * bn_lambda_ratio - q_bar);
+//         q_bar = std::max(q_bar, 0.0f);
+//         q_hat += alpha * (S - q_hat);
+//         q_hat = std::max(q_hat, 0.0f);
+// //         printf("%f %f %f ", q_bar, q_hat, bn_lambda_ratio);
+// //         printf("%f %f\n", q_bars[i].get_delayed_val(), q_hats[i].get_delayed_val());
+//       }
+//       else {
+//         q_bar *= alpha;
+//         q_hat *= alpha;        
+//       }
+//       q_bars[i].push_back(q_bar, cur_time);
+//       q_hats[i].push_back(q_hat, cur_time);
+//     }    
+//     
+//     tx_rate = tgt_rate * tgt_rate_factor;
+//     double delay = physical_delay + queuing_delay;
+//     tx_window = static_cast<int>(tgt_rate * delay / 8e6);
+//     if (tx_window < smallest_window) tx_window = smallest_window;
+//   }
+
+#if METHOD == 1
+  //////////////////////////////////////////////////////////////////////////////
+  void update_rate(const client_info& info, bool forward) {
     
+    if (!forward)
+        return;
+        
+    const int S = packet_size + 42;
+    const float tgt_rate_factor = 1.00f;
+
+    // The formula is
+    //            packet_size * capacity
+    // --------------------------------------------
+    //                     ( rate - observed_rate )
+    // packet_size + qbyte (----------------------)
+    //                     (         rate         )
+
+    // estimate my rate
     high_resolution_timer::time_point cur_time;
     cur_time = high_resolution_timer::clock_type::now();
-    std::int64_t pos = buf_size - 1;
-    
-    int sum_bytes = 0;
-    while (pos >= 0 && cur_time - acknowledgements[pos].time < rate_obs_dur)
-      sum_bytes += acknowledgements[pos--].num_bytes + 42;
+    if (forward && (++running_counter & 0x1) == 0)
+    {
 
-    //To be correct, we must use the time from the earlier sample
-    high_resolution_timer::duration dur;
-    if (pos >= 0)
-      dur = cur_time - acknowledgements[pos].time;
-    else //here we are just starting, and we do not have enough samples
-      dur = cur_time - acknowledgements[pos+1].time;
+      float dt = (cur_time - last_obs_rate_update_time).count() / 1e9f;
+      float alpha = std::min(1.0f, sdn_switch::tau * dt);
+      float rate = num_rec_bytes * 8.0f / dt;
+      observed_rate += alpha * (rate - observed_rate);
+      num_rec_bytes = 0;
+      last_obs_rate_update_time = cur_time;
+    }
     
-    float observed_rate = sum_bytes * 8e9 / dur.count();
-    
-    //estimate rate
+    //estimate new rate
     double tgt_rate = max_rate;
+    double physical_delay = 0, queuing_delay = 0;
+    int btn_switch = 0;
     for (int i = 0; i < info.num_switches; ++i) {
-//      // The formula is
-//      //            packet_size * capacity
-//      // --------------------------------------------
-//      //                     ( rate - observed_rate )
-//      // packet_size + qbyte (----------------------)
-//      //                     (         rate         )
-//
-//      double t = info.f_switches[i].rate - observed_rate;
-//      t = (t > 0) ? t / info.f_switches[i].rate : 0;
-//      double den = packet_size + info.f_switches[i].qbytes * t;
-//      t = packet_size * info.f_switches[i].capacity / den;
-//      if (t < tgt_rate) tgt_rate = t;
-      double my_qbytes = info.f_switches[i].qbytes;
-      if (info.f_switches[i].rate >= observed_rate &&
-          info.f_switches[i].rate > 0)
-        my_qbytes *= observed_rate / info.f_switches[i].rate;
-      double rate = S * info.f_switches[i].capacity;
-      rate /= (S + info.f_switches[i].qbytes - my_qbytes);
-      if (rate < tgt_rate) tgt_rate = rate;
-    }
-    
-    //estimate delay
-    double delay = 0;
-    for (int i = 0; i < info.num_switches; ++i) {
-//      // Other bytes are
-//      //       ( rate - observed_rate )
-//      // qbyte (----------------------)
-//      //       (         rate         )
-//      // we add to it, the ratio of the tgt_rate to observed_rate multiplied
-//      // by the packet size, which is not correct, but an approximation
-//      double t = info.f_switches[i].rate - observed_rate;
-//      t = (t > 0) ? t / info.f_switches[i].rate : 0;
-//      double others_qbytes = t * info.f_switches[i].qbytes;
-//      double new_qbytes = others_qbytes + packet_size;
-      double other_qbytes = 0;
-      if (info.f_switches[i].rate > observed_rate) {
-        double myqbytes = observed_rate * info.f_switches[i].qbytes;
-        myqbytes /= info.f_switches[i].rate;
-        other_qbytes = info.f_switches[i].qbytes - myqbytes;
-      }
-      double new_qbytes = other_qbytes;
-//      if (i == 0)
-//        printf("other_qbytes = %lf, new_qbytes %lf, qbytes = %f\n",
-//               other_qbytes, new_qbytes, info.f_switches[i].qbytes);
       
-      delay += new_qbytes * 8e6 / info.f_switches[i].capacity;
-      delay += info.f_switches[i].physical_delay;
-    }
-    for (int i = 0; i < info.num_switches; ++i) {
-      delay += info.b_switches[i].qbytes * 8e6 / info.b_switches[i].capacity;
-      delay += info.b_switches[i].physical_delay;
+      double y_hat = observed_rate;
+      double y_bar = info.f_switches[i].rate;
+      double q_bar = info.f_switches[i].qbytes;
+      double C = info.f_switches[i].capacity;
+      
+      double my_qbytes = q_bar;
+      if (y_bar >= y_hat && y_bar > 0)
+        my_qbytes *= y_hat / y_bar;
+      
+      double rate = S * C;
+      rate /= (S + q_bar - my_qbytes);
+      if (rate < tgt_rate) { tgt_rate = rate; btn_switch = i; }
+      
+      //time delay
+      double other_qbytes = q_bar - my_qbytes;
+      queuing_delay += (S + other_qbytes) * 8e6 / C;
+      queuing_delay += info.b_switches[i].qbytes * 8e6 / C;
+      physical_delay += info.f_switches[i].physical_delay;
+      physical_delay += info.b_switches[i].physical_delay;
     }
     
-    rate = tgt_rate * 1.05f;
-
-    rtt_delay = static_cast<long long>(delay);
-    tx_window = static_cast<int>(tgt_rate * delay / 8e6);
-    if (tx_window < smallest_window) tx_window = smallest_window;
+    //find window size
+    double delay = physical_delay + queuing_delay;
+    int temp_tx_window = static_cast<int>(tgt_rate * delay / 8e6);
+    if (temp_tx_window < smallest_window) temp_tx_window = smallest_window;
+    
     double fractional_seconds_since_epoch
       = std::chrono::duration_cast<std::chrono::duration<double>>(
         std::chrono::system_clock::now().time_since_epoch()).count();
-//    printf("Client = %p, %f, "
-//           "observed_rate = %f, rate = %f, rtt_delay = %lld, tx_window = %d, "
-//           "rate = %f\n",
-//            this,
-//            fractional_seconds_since_epoch,
-//            observed_rate, rate, rtt_delay, tx_window, info.f_switches[0].rate);
+    printf("%f %d ", fractional_seconds_since_epoch, temp_tx_window);
+    
+    //implement a smith predictor
+    if (skip_count) 
+      --skip_count;
+    else
+      temp_tx_window += old_W.get_recent_val() - old_W.get_delayed_val();
+    
+    printf("%s %d %d %d ", skip_count == 0 ? "T":"F", temp_tx_window, 
+           old_W.get_recent_val(), old_W.get_delayed_val());
+    
+    //process data for next smith predictor
+    //dw
+    int dq = temp_tx_window - tx_window;
+    
+    //dw into linearised model of G, which is
+    //C.D.S/(S+(1-y_hat/y_bar).q_bar)
+    //the linearised model is
+    double y_hat = observed_rate;
+    double y_bar = info.f_switches[btn_switch].rate;
+    y_bar = std::min(y_bar, y_hat);
+    double others_portion = 1;
+    if (y_bar >= y_hat && y_bar > 0)
+      others_portion = 1 - y_hat / y_bar;
+    double q_bar = info.f_switches[btn_switch].qbytes;
+    double C = info.f_switches[btn_switch].capacity;    
+    double num = (C/8) * (delay/1e6) * S * others_portion;
+    double den = (S + others_portion * q_bar) * (S + others_portion * q_bar);
+    double dw = num * dq / den;
+    
+    printf("dq=%d dw=%f ", dq, dw);
+    
+    //accumulator
+    old_W.set_delay(physical_delay * 1000, cur_time);
+    int new_W = static_cast<int>(old_W.get_recent_val() + dw + 0.5);
+    old_W.push_back(new_W, cur_time);
+    
+    //calculate rates
+    tx_window = temp_tx_window;
+    tx_rate = tx_window * tgt_rate_factor * 8e6 / delay;
+    
+    printf("%d %f\n", tx_window, tx_rate);
+    
+//     for (int i = 0; i < info.num_switches; ++i) {
+//       double y_hat = observed_rate;
+// //       y_hat -= info.f_switches[i].y_hat.get_delayed_val();
+// //       y_hat += info.f_switches[i].y_hat.get_recent_val();
+// //       y_hat = y_hat > 0 ? y_hat : 0.0;
+//       double y_bar = info.f_switches[i].rate;
+// //       y_bar -= info.f_switches[i].y_bar.get_delayed_val();
+// //       y_bar += info.f_switches[i].y_bar.get_recent_val();
+// //       y_bar = y_bar > 0 ? y_bar : 0.0;
+//       double q_bar = info.f_switches[i].qbytes;
+// //       q_bar -= info.f_switches[i].q_bar.get_delayed_val();
+// //       q_bar += info.f_switches[i].q_bar.get_recent_val();
+// //       q_bar = q_bar > 0 ? q_bar : 0.0;
+//             
+// //       if (i == 0)
+// //         printf("%f\n", y_hat);
+// //       if (i == 0)
+// //         printf("%f %f %f\n", y_hat, y_bar, q_bar);    
+//     
+//       info.f_switches[i].y_hat.set_delay(physical_delay);
+//       
+//       float y_hat = info.f_switches[i].y_hat.get_recent_val();
+//       high_resolution_timer::time_point y_hat_time;
+//       y_hat_time = info.f_switches[i].y_hat.get_recent_time();
+//       info.f_switches[i].y_hat.push_back(rate, cur_time);
+//       
+//       float y_bar = info.f_switches[i].rate - y_hat + rate;
+//       y_bar = y_bar > 0 ? y_bar : 0.0f;
+//       info.f_switches[i].y_bar.push_back(y_bar, cur_time);
+//       
+//       float dr = y_bar - info.f_switches[i].capacity;
+//       float qbytes = info.f_switches[i].qbytes;
+//       qbytes += dr * (cur_time - y_hat_time).count() / 1e9f;
+//       qbytes = qbytes > 0.0f ? qbytes : 0.0f;
+//       info.f_switches[i].q_bar.push_back(qbytes, cur_time);
+//       
+//       printf("%f %f %f\n", rate, y_bar, qbytes);
+//     }
+//     printf("raet: %f %f %f\n", info.f_switches[0].rate, info.f_switches[1].rate, info.f_switches[2].rate);
   }
+#endif
+
+#if METHOD == 2
+  //////////////////////////////////////////////////////////////////////////////
+  void update_rate(const client_info& info, bool forward) {
   
+    if (!forward)
+        return;
+        
+    const int S = packet_size + 42;
+    const float tgt_rate_factor = 1.00f;
+    const double info_delay[3] = {0.025, 0.3, 0.5};
+    if (forward && (++running_counter & 0x1) == 0)
+    {
+      high_resolution_timer::time_point cur_time;
+      cur_time = high_resolution_timer::clock_type::now();
+      float dt = (cur_time - last_obs_rate_update_time).count() / 1e9f;
+      float alpha = std::min(1.0f, sdn_switch::tau * dt);
+      float rate = num_rec_bytes * 8.0f / dt;
+      observed_rate += alpha * (rate - observed_rate);
+      num_rec_bytes = 0;
+      last_obs_rate_update_time = cur_time;
+    }
+    
+    //estimate rate
+    double tgt_rate = max_rate;
+    double physical_delay = 0, queuing_delay = 0;
+    for (int i = 0; i < info.num_switches; ++i) {
+      
+      double y_hat = observed_rate;
+      double y_bar = info.f_switches[i].rate;
+      double q_bar = info.f_switches[i].qbytes;
+      double C = info.f_switches[i].capacity;
+      
+      double my_qbytes = q_bar;
+      if (y_bar >= y_hat && y_bar > 0)
+        my_qbytes *= y_hat / y_bar;
+
+      double rate = S * C;
+      rate /= (S + q_bar - my_qbytes);
+      double t = 2*S * 8 / info_delay[i]; //rate change in bits per second
+      double upper_rate = y_hat * C / y_bar + t + std::max((C - y_bar) * y_bar / y_hat, 0.0);
+      double lower_rate = std::max(y_hat * C / y_bar - (my_qbytes - S + 2*S) * 8 / info_delay[i], 0.0);
+      rate = std::max(rate, lower_rate);
+      rate = std::min(rate, upper_rate);
+//       if (i == 1) printf("%f %f %f %f %f %f %s %f %s\n", my_qbytes, 
+//       y_hat, y_bar, C, rate, 
+//       upper_rate, rate==upper_rate?"T":"F", lower_rate, rate==lower_rate?"T":"F");
+      
+      if (rate < tgt_rate) tgt_rate = rate;
+      
+      //time delay
+      double other_qbytes = q_bar - my_qbytes;
+      queuing_delay += (S + other_qbytes) * 8e6 / C;
+      queuing_delay += info.b_switches[i].qbytes * 8e6 / C;
+      physical_delay += info.f_switches[i].physical_delay;
+      physical_delay += info.b_switches[i].physical_delay;
+    }
+
+    tx_rate = tgt_rate * tgt_rate_factor;
+    double delay = physical_delay + queuing_delay;
+    tx_window = static_cast<int>(tgt_rate * delay / 8e6);
+    if (tx_window < smallest_window) tx_window = smallest_window;
+  }
+#endif
+
+#if METHOD == 3
+  //////////////////////////////////////////////////////////////////////////////
+  void update_rate(const client_info& info, bool forward) {
+  
+    if (!forward)
+        return;
+        
+    const int S = packet_size + 42;
+    const float tgt_rate_factor = 1.00f;
+    if (forward && (++running_counter & 0x1) == 0)
+    {
+      high_resolution_timer::time_point cur_time;
+      cur_time = high_resolution_timer::clock_type::now();
+      float dt = (cur_time - last_obs_rate_update_time).count() / 1e9f;
+      float alpha = std::min(1.0f, sdn_switch::tau * dt);
+      float rate = num_rec_bytes * 8.0f / dt;
+      observed_rate += alpha * (rate - observed_rate);
+      num_rec_bytes = 0;
+      last_obs_rate_update_time = cur_time;
+    }
+    
+    //estimate rate
+    double tgt_rate = max_rate;
+    double physical_delay = 0, queuing_delay = 0;
+    for (int i = 0; i < info.num_switches; ++i) {
+      
+      double y_hat = observed_rate;
+      double y_bar = info.f_switches[i].rate;
+      double q_bar = info.f_switches[i].qbytes;
+      double C = info.f_switches[i].capacity;
+      
+      double my_qbytes = q_bar;
+      if (y_bar >= y_hat && y_bar > 0)
+        my_qbytes *= y_hat / y_bar;
+
+      double rate = S * C;
+      rate /= (S + q_bar - my_qbytes);      
+      if (rate < tgt_rate) tgt_rate = rate;
+      //time delay
+      double other_qbytes = q_bar - my_qbytes;
+      queuing_delay += (S + other_qbytes) * 8e6 / C;
+      queuing_delay += info.b_switches[i].qbytes * 8e6 / C;
+      physical_delay += info.f_switches[i].physical_delay;
+      physical_delay += info.b_switches[i].physical_delay;
+    }
+
+    tx_rate = tgt_rate * tgt_rate_factor;
+    double delay = physical_delay + queuing_delay;
+    tx_window = static_cast<int>(tgt_rate * delay / 8e6);
+    if (tx_window < smallest_window) tx_window = smallest_window;
+  }
+#endif
+
+
   const udp::endpoint& endpoint() { return cli_ep; }
   boost::asio::ip::address address() { return cli_ep.address(); }
   unsigned short port() { return cli_ep.port(); }
@@ -243,19 +547,19 @@ protected:
     high_resolution_timer::time_point cur_time;
     cur_time = high_resolution_timer::clock_type::now();
     high_resolution_timer::duration one_packet_duration;
-    one_packet_duration = get_duration(packet_size * 8e9 / rate);
+    one_packet_duration = get_duration((packet_size + 42) * 8e9 / tx_rate);
 
     int count = 0;
     while (time_gate <= cur_time) {
-      if ((cur_message - last_ack) * packet_size > tx_window) {
+      if ((cur_message - last_ack) * (packet_size + 42) > tx_window) {
         time_gate = cur_time + one_packet_duration;
         break;
       }
       *(int *) send_buf = ++cur_message;
+      *(long long *)(((int *) send_buf) + 4) = cur_time.time_since_epoch().count();
       socket.async_send_to(boost::asio::buffer(send_buf, packet_size),
                            cli_ep, boost::bind(&udp_svr_client::handle_send,
                                                this, _1, _2));
-//      acknowledgements.push_back(acknowledgment_info(packet_size, cur_time));
       time_gate += one_packet_duration;
       count++;
     }
@@ -290,16 +594,26 @@ protected:
   char send_buf[6144]; //should be more then enough to hold one packet
   int send_cnt, recv_cnt; //used to count how many bytes were received/sent
   int packet_size; //this is the tx packet size. It is most likely a const
-  double rate, observed_rate, max_rate; //bits per second
+  double tx_rate, max_rate; //bits per second
   long long rtt_delay; //round trip delay in usec
   bool marked_for_deletion; //this objected is marked for deletion
-  ack_buffer acknowledgements;
   high_resolution_timer::duration rate_obs_dur;
   int last_ack, cur_message;
   int tx_window, smallest_window;
   bool data_exist;
   const float transition_probability;
   float transition_threshold;
+  
+protected:
+  int num_rec_bytes; //used to count a number of packets, only count when
+                   //there is a time gap larger than 0.05s
+  double observed_rate;
+  high_resolution_timer::time_point last_obs_rate_update_time;
+  int running_counter;
+#if METHOD == 1
+  int skip_count;
+  circular_buf_with_delay<int> old_W;
+#endif
   
 protected:
   high_resolution_timer::time_point last_msg_time, time_gate;
@@ -339,12 +653,12 @@ public:
     timer.async_wait(boost::bind(&udp_server::handle_timeout, this, _1));
   }
   
-  void update_clients(const address& addr, const client_info& info) {
+  void update_clients(const address& addr, const client_info& info, bool forward) {
     //update more than one client if they exist
     udp_clients_map::iterator start = clients_map.begin();
     udp_clients_map::iterator end = clients_map.end();
     while ((start = find(start, end, addr)) != end) {
-      start->second->update_rate(info);
+      start->second->update_rate(info, forward);
       ++start;
     }
   }

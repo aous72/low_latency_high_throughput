@@ -23,6 +23,7 @@
 #include <boost/asio/io_service.hpp>
 #include <boost/asio/ip/udp.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/circular_buffer.hpp>
 
 using boost::asio::io_service;
 using boost::asio::high_resolution_timer;
@@ -41,6 +42,73 @@ extern int num_files;
 high_resolution_timer::duration get_duration(double nanosecs);
 
 /////////////////////////////////////////////////////////////////////////////
+template<typename T>
+struct time_val {
+  time_val(T val, const high_resolution_timer::time_point& time) 
+  : val(val), time(time) {}
+  T val;
+  high_resolution_timer::time_point time;
+};
+  
+/////////////////////////////////////////////////////////////////////////////
+template<typename T>
+class circular_buf_with_delay {
+public:
+    circular_buf_with_delay() 
+    : delay(get_duration(0.0)), buffer(100) {}
+    
+    void push_back(T val, 
+                   const high_resolution_timer::time_point& cur_time) 
+    {
+      buffer.push_back(time_val<T>(val, cur_time));
+      remove_old(cur_time);
+    }
+    
+    void set_delay(double delay_val, 
+                   const high_resolution_timer::time_point& cur_time)
+    {
+      high_resolution_timer::duration new_delay(get_duration(delay_val));
+      if (this->delay != new_delay) {
+        this->delay = new_delay;
+        remove_old(cur_time);
+//         printf("delay set\n");
+      }
+    }
+
+    T get_delayed_val()
+    {
+      T delayed_val = 0.0;
+      if (buffer.size() > 0)
+        delayed_val = buffer[0].val;
+      return delayed_val;
+    }
+    
+    T get_recent_val() {
+      T val = 0.0;
+      if (buffer.size() > 0)
+        val = buffer[buffer.size() - 1].val;
+      return val;
+    }
+    
+     high_resolution_timer::time_point get_recent_time() {
+      if (buffer.size() > 0)
+        return buffer[buffer.size() - 1].time;
+      else
+        return high_resolution_timer::clock_type::now();
+    }
+    
+private:
+    boost::circular_buffer<time_val<T>> buffer;
+    void remove_old(const high_resolution_timer::time_point& cur_time) 
+    {
+      while (buffer.size() > 0 && cur_time - buffer[0].time > delay)
+        buffer.pop_front();
+    }
+    
+    high_resolution_timer::duration delay; //in usec
+};
+
+/////////////////////////////////////////////////////////////////////////////
 struct sdn_switch
 {
   sdn_switch() {
@@ -50,29 +118,31 @@ struct sdn_switch
     physical_delay = 0;
   }
   
-  void add_reading(float delta, int tbytes, int qbytes,
+  void add_reading(double delta, int tbytes, int qbytes,
                    float capacity, long long physical_delay,
                    FILE *data_file, int number_active_clients)
   {
 //     assert(delta != 0);
-    if (delta == 0) {
-      this->qbytes -= alpha * this->qbytes;
+    if (delta == 0)
       return;
-    }
+    float alpha = std::min(1.0f, tau * (float)delta);
     float cur_rate = tbytes * 8.0f / delta;
-//    float cur_alpha = std::min(1.0f, alpha * delta);
     this->rate += alpha * (cur_rate - this->rate);
+//     this->qbytes += alpha * ((qbytes >= 1514 ? qbytes : 1514) - this->qbytes);
     this->qbytes += alpha * (qbytes - this->qbytes);
     this->capacity = capacity;
     this->physical_delay = physical_delay;
-    if (data_file) {
-      double fractional_seconds_since_epoch
+    double fractional_seconds_since_epoch
       = std::chrono::duration_cast<std::chrono::duration<double>>(
         std::chrono::system_clock::now().time_since_epoch()).count();
-      fprintf(data_file, "%f ", fractional_seconds_since_epoch);
-      fprintf(data_file, "%f ", delta);
-      fprintf(data_file, "%f %f", cur_rate, this->rate);
-      fprintf(data_file, " %d %f ", qbytes, this->qbytes);
+    double t = fractional_seconds_since_epoch / 100;
+    t = t - floor(t);    
+    double time_diff = t * 100 - (delta * 1000 - floor(delta * 1000)) * 100;
+    time_diff = time_diff > 0 ? time_diff : time_diff + 100.0;
+    this->info_delay = time_diff * 1e9;
+    if (data_file) {
+      fprintf(data_file, "%f %f %f %f %f %d %f %f ", fractional_seconds_since_epoch,
+        delta, cur_rate, this->rate, capacity, qbytes, this->qbytes, time_diff);
       if (number_active_clients >= 0)
         fprintf(data_file, "%d ", number_active_clients);
       fflush(data_file);
@@ -84,11 +154,19 @@ struct sdn_switch
   
   float rate;                 //rate through the switch in bps
   float qbytes;               //bytes in queue
+  
+  //this will be changed in the process of controlling the network
+//   mutable float desired_rate; //the desired rate for this switch
+                              //the smallest desired rate among switch is the 
+                              // used rate
+//   mutable circular_buf_with_delay y_hat, y_bar, q_bar; //used for
+                                                       //smith predictor
   //the following are usually constants
   float capacity;             //bps
   long long physical_delay;   //usec
+  double info_delay;          //usec
   
-  static const float alpha;
+  static const float tau;
 };
 
 /////////////////////////////////////////////////////////////////////////////
@@ -150,10 +228,10 @@ struct client_info {
         { --remaining_chars; ++buf; }
         --remaining_chars; ++buf;
         
-        int delta;
+        double delta;
         int qbytes, transmitted_bytes;
         int capacity, physical_delay;
-        if (sscanf(buf, "%d, %d, %d, %d, %d", &qbytes, &transmitted_bytes,
+        if (sscanf(buf, "%d, %d, %d, %d, %lf", &qbytes, &transmitted_bytes,
                    &capacity, &physical_delay, &delta) != 5) {
           std::cerr << "error in switch reading format\n";
           printf("%s\n", buf);
@@ -165,9 +243,15 @@ struct client_info {
                                       capacity * 1000.0f,
                                       (std::int64_t)(physical_delay*1000),
                                       data_file, num_active_clients);
-//            printf("fsw %d, q = %f, r = %f, c = %f, d = %lld\n", i,
+//            printf("fsw %d q=%f r=%f c=%f d=%lld, id=%f "
+//                   "dlta=%f, tb=%d, qb=%d, cap=%f, d=%ld\n", 
+//                   i,
 //                   f_switches[i].qbytes, f_switches[i].rate,
-//                   f_switches[i].capacity, f_switches[i].physical_delay);
+//                   f_switches[i].capacity, f_switches[i].physical_delay,
+//                   f_switches[i].info_delay,
+//                   delta / 1000.0f, transmitted_bytes, qbytes,
+//                   capacity * 1000.0f,
+//                   (std::int64_t)(physical_delay*1000));
 //            printf("forward %d %d\n", idx, i);
           }
         }
@@ -215,7 +299,6 @@ struct client_info {
   int num_switches;
   int fidx, bidx;
   sdn_switch f_switches[max_switches], b_switches[max_switches];
-  
 protected:
   FILE *data_file;
 };

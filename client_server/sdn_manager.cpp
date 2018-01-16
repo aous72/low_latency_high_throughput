@@ -17,7 +17,7 @@ high_resolution_timer::duration get_duration(double nanosecs) {
   return high_resolution_timer::duration(static_cast<int_least64_t>(t));
 }
 
-const float sdn_switch::alpha = 0.1f;
+const float sdn_switch::tau = 1.0f;
 
 /////////////////////////////////////////////////////////////////////////////
 int sdn_manager::process_replies() {
@@ -48,7 +48,7 @@ int sdn_manager::process_replies() {
         it->second->process_message(ebuf.get_buf() + pos, body_size,
                                     requests.front().forward,
                                     server->get_active_clients());
-        server->update_clients(client_addr, *(it->second));
+        server->update_clients(client_addr, *(it->second), requests.front().forward);
         requests.erase(requests.begin());
       }
       else
