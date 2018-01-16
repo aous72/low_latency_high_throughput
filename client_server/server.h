@@ -35,7 +35,7 @@ using boost::system::error_code;
 class udp_svr_client;
 class udp_server;
 
-#define METHOD 2
+#define METHOD 3
 
 /////////////////////////////////////////////////////////////////////////////
 struct rcv_data {
