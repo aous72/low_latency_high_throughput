@@ -99,7 +99,7 @@ plot(client2(:,1), filtfilt([1 1 1], 3, client2(:,2) * 1514 * 8 / 1e5));
 grid
 xlabel('Time in seconds');
 ylabel('Bandwidth in Mbps');
-matlab2tikz('figure12_rate.tikz');
+% matlab2tikz('figure12_rate.tikz');
 
 clear client1 client2
 server = dlmread('./results6/11/server_data_file_0.txt');
@@ -111,7 +111,7 @@ plot(server(:,1), filter(0.1, [1, -0.9], server(:,6) / 1000));
 grid
 xlabel('Time in seconds');
 ylabel('Number of Queued Bytes in kB');
-matlab2tikz('figure12_queue.tikz');
+% matlab2tikz('figure12_queue.tikz');
 
 %% result for Figure 13, taken from results7
 close all;
@@ -128,7 +128,7 @@ plot(client2(:,1), filtfilt([1 1 1], 3, client2(:,2) * 1514 * 8 / 1e5));
 grid
 xlabel('Time in seconds');
 ylabel('Bandwidth in Mbps');
-matlab2tikz('figure13_rate.tikz');
+% matlab2tikz('figure13_rate.tikz');
 
 clear client1 client2
 server = dlmread('./results7/11/server_data_file_0.txt');
@@ -138,7 +138,7 @@ plot(server(:,1), server(:,7) / 1000);
 grid
 xlabel('Time in seconds');
 ylabel('Number of Queued Bytes in kB');
-matlab2tikz('figure13_queue1.tikz');
+% matlab2tikz('figure13_queue1.tikz');
 
 figure;
 plot(server(:,1), server(:,14) / 1000);
@@ -147,7 +147,7 @@ plot(server(:,1), filter(0.1, [1, -0.9], server(:,14) / 1000));
 grid
 xlabel('Time in seconds');
 ylabel('Number of Queued Bytes in kB');
-matlab2tikz('figure13_queue2.tikz');
+% matlab2tikz('figure13_queue2.tikz');
 
 %% result for Figure 14, taken from results4
 close all;
@@ -164,7 +164,7 @@ plot(client2(:,1), filtfilt([1 1 1], 3, client2(:,2) * 1514 * 8 / 1e5));
 grid
 xlabel('Time in seconds');
 ylabel('Bandwidth in Mbps');
-matlab2tikz('figure14_rate.tikz');
+% matlab2tikz('figure14_rate.tikz');
 
 clear client1 client2
 server = dlmread('./results4/11/server_data_file_0.txt');
@@ -174,7 +174,7 @@ plot(server(:,1), filter(0.1, [1, -0.9], server(:,6) / 1000));
 grid
 xlabel('Time in seconds');
 ylabel('Number of Queued Bytes in kB');
-matlab2tikz('figure14_queue1.tikz');
+% matlab2tikz('figure14_queue1.tikz');
 
 figure;
 plot(server(:,1), server(:,14) / 1000);
@@ -186,7 +186,7 @@ plot(server(:,1), filter(0.1, [1, -0.9], server(:,14) / 1000));
 grid
 xlabel('Time in seconds');
 ylabel('Number of Queued Bytes in kB');
-matlab2tikz('figure14_queue2.tikz');
+% matlab2tikz('figure14_queue2.tikz');
 
 %% result for Figure 15, taken from results5
 close all;
@@ -204,7 +204,7 @@ plot(client2(:,1), filtfilt([1 1 1], 3, client2(:,2) * 1514 * 8 / 1e5));
 grid
 xlabel('Time in seconds');
 ylabel('Bandwidth in Mbps');
-matlab2tikz('figure15_rate.tikz');
+% matlab2tikz('figure15_rate.tikz');
 
 clear client1 client2
 server = dlmread([f '11/server_data_file_0.txt']);
@@ -214,7 +214,7 @@ plot(server(:,1), server(:,7) / 1000);
 grid
 xlabel('Time in seconds');
 ylabel('Number of Queued Bytes in kB');
-matlab2tikz('figure15_queue1.tikz');
+% matlab2tikz('figure15_queue1.tikz');
 
 figure;
 plot(server(:,1), server(:,14) / 1000);
@@ -223,4 +223,4 @@ plot(server(:,1), filter(0.1, [1, -0.9], server(:,14) / 1000));
 grid
 xlabel('Time in seconds');
 ylabel('Number of Queued Bytes in kB');
-matlab2tikz('figure15_queue2.tikz');
+% matlab2tikz('figure15_queue2.tikz');
