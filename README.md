@@ -1,4 +1,4 @@
-### low_latency_high_throughput
+# Low Latency High Throughput Chapter 6 Code
 
 This is the code that goes with chapter 6 of the paper  
 'Responsive high throughput congestion control for interactive applications over SDN-enabled networks'  
